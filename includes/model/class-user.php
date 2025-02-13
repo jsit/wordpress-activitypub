@@ -163,7 +163,8 @@ class User extends Actor {
 	 * @return string The preferred username.
 	 */
 	public function get_preferred_username() {
-		return \get_the_author_meta( 'login', $this->_id );
+		// return \get_the_author_meta( 'login', $this->_id );
+		return \get_the_author_meta( 'nicename', $this->_id );
 	}
 
 	/**

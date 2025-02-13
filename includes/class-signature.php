@@ -142,7 +142,8 @@ class Signature {
 		if ( $user_id > 0 ) {
 			$user = \get_userdata( $user_id );
 			// Sanitize username because it could include spaces and special chars.
-			$id = sanitize_title( $user->user_login );
+			// $id = sanitize_title( $user->user_login );
+			$id = $user->user_nicename;
 		}
 
 		return 'activitypub_keypair_for_' . $id;
