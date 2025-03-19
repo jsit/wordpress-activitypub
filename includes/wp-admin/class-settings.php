@@ -9,6 +9,7 @@ namespace Activitypub\WP_Admin;
 
 use Activitypub\Collection\Actors;
 use Activitypub\Model\Blog;
+use Activitypub\Sanitize;
 use function Activitypub\is_user_disabled;
 
 /**
@@ -136,14 +137,7 @@ class Settings {
 				'type'              => 'string',
 				'description'       => \__( 'Websites allowed to credit you.', 'activitypub' ),
 				'default'           => \Activitypub\home_host(),
-				'sanitize_callback' => function ( $value ) {
-					$value = explode( PHP_EOL, $value );
-					$value = array_filter( array_map( 'trim', $value ) );
-					$value = array_filter( array_map( 'esc_attr', $value ) );
-					$value = implode( PHP_EOL, $value );
-
-					return $value;
-				},
+				'sanitize_callback' => array( Sanitize::class, 'host_list' ),
 			)
 		);
 
@@ -177,6 +171,17 @@ class Settings {
 			)
 		);
 
+		\register_setting(
+			'activitypub',
+			'activitypub_relays',
+			array(
+				'type'              => 'array',
+				'description'       => \__( 'Relays', 'activitypub' ),
+				'default'           => array(),
+				'sanitize_callback' => array( Sanitize::class, 'url_list' ),
+			)
+		);
+
 		// Blog-User Settings.
 		\register_setting(
 			'activitypub_blog',
@@ -197,41 +202,7 @@ class Settings {
 				'description'       => \esc_html__( 'The Identifier of the Blog-User', 'activitypub' ),
 				'show_in_rest'      => true,
 				'default'           => Blog::get_default_username(),
-				'sanitize_callback' => function ( $value ) {
-					// Hack to allow dots in the username.
-					$parts     = explode( '.', $value );
-					$sanitized = array();
-
-					foreach ( $parts as $part ) {
-						$sanitized[] = \sanitize_title( $part );
-					}
-
-					$sanitized = implode( '.', $sanitized );
-
-					// Check for login or nicename.
-					$user = new \WP_User_Query(
-						array(
-							'search'         => $sanitized,
-							'search_columns' => array( 'user_login', 'user_nicename' ),
-							'number'         => 1,
-							'hide_empty'     => true,
-							'fields'         => 'ID',
-						)
-					);
-
-					if ( $user->results ) {
-						add_settings_error(
-							'activitypub_blog_identifier',
-							'activitypub_blog_identifier',
-							\esc_html__( 'You cannot use an existing author\'s name for the blog profile ID.', 'activitypub' ),
-							'error'
-						);
-
-						return Blog::get_default_username();
-					}
-
-					return $sanitized;
-				},
+				'sanitize_callback' => array( Sanitize::class, 'blog_identifier' ),
 			)
 		);
 
@@ -242,6 +213,17 @@ class Settings {
 				'type'        => 'integer',
 				'description' => \__( 'The Attachment-ID of the Sites Header-Image', 'activitypub' ),
 				'default'     => null,
+			)
+		);
+
+		\register_setting(
+			'activitypub_blog',
+			'activitypub_blog_user_also_known_as',
+			array(
+				'type'              => 'array',
+				'description'       => 'An array of URLs that the blog user is known by.',
+				'default'           => array(),
+				'sanitize_callback' => array( Sanitize::class, 'url_list' ),
 			)
 		);
 	}
@@ -315,6 +297,12 @@ class Settings {
 			),
 		);
 
+		if ( ! is_user_disabled( get_current_user_id() ) ) {
+			$webfinger = Actors::get_by_id( get_current_user_id() )->get_webfinger();
+		} else {
+			$webfinger = ( new Blog() )->get_webfinger();
+		}
+
 		\get_current_screen()->add_help_tab(
 			array(
 				'id'      => 'template-tags',
@@ -357,6 +345,41 @@ class Settings {
 					'<p>' . \esc_html__( 'You may also use any Shortcode normally available to you on your site, however be aware that Shortcodes may significantly increase the size of your content depending on what they do.', 'activitypub' ) . '</p>' . "\n" .
 					'<p>' . \esc_html__( 'Note: the old Template Tags are now deprecated and automatically converted to the new ones.', 'activitypub' ) . '</p>' . "\n" .
 					'<p>' . \wp_kses( \__( '<a href="https://github.com/automattic/wordpress-activitypub/issues/new" target="_blank">Let us know</a> if you miss a Template Tag.', 'activitypub' ), $anchor_html ) . '</p>',
+			)
+		);
+
+		\get_current_screen()->add_help_tab(
+			array(
+				'id'      => 'account-migration',
+				'title'   => \__( 'Account Migration', 'activitypub' ),
+				'content' =>
+					'<h2>' . \esc_html__( 'Migrating Between Mastodon and WordPress', 'activitypub' ) . '</h2>' . "\n" .
+					'<p>' . \esc_html__( 'The ActivityPub plugin allows you to migrate your account between WordPress and Mastodon (or other ActivityPub-compatible platforms) while bringing your followers with you.', 'activitypub' ) . '</p>' . "\n" .
+
+					'<h3>' . \esc_html__( 'Migrating from Mastodon to WordPress', 'activitypub' ) . '</h3>' . "\n" .
+					'<ol>' . "\n" .
+					'<li>' . \wp_kses(
+						\sprintf(
+							/* translators: %s is the URL to the profile page */
+							\__( 'In your WordPress profile, go to the <a href="%s">Account Aliases</a> section and add your Mastodon profile URL (e.g., <code>https://mastodon.social/@username</code>).', 'activitypub' ),
+							\esc_url( \admin_url( 'profile.php#activitypub_blog_user_also_known_as' ) )
+						),
+						array_merge( $code_html, $anchor_html )
+					) . '</li>' . "\n" .
+					'<li>' . \esc_html__( 'Save your WordPress profile changes.', 'activitypub' ) . '</li>' . "\n" .
+					'<li>' . \esc_html__( 'Log in to your Mastodon account.', 'activitypub' ) . '</li>' . "\n" .
+					'<li>' . \esc_html__( 'Go to Preferences > Account > Move to a different account.', 'activitypub' ) . '</li>' . "\n" .
+					'<li>' . \wp_kses(
+						\sprintf(
+							/* translators: %s is the user's ActivityPub username */
+							\__( 'Enter your WordPress ActivityPub username (e.g., <code>%s</code>) in the "Handle of the new account" field.', 'activitypub' ),
+							\esc_html( $webfinger )
+						),
+						$code_html
+					) . '</li>' . "\n" .
+					'<li>' . \esc_html__( 'Confirm the migration in Mastodon by entering your password.', 'activitypub' ) . '</li>' . "\n" .
+					'<li>' . \esc_html__( 'Your followers will be notified and redirected to follow your WordPress account.', 'activitypub' ) . '</li>' . "\n" .
+					'</ol>' . "\n",
 			)
 		);
 
