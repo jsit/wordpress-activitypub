@@ -8,16 +8,19 @@
 namespace Activitypub\Tests;
 
 use Activitypub\Scheduler;
-use Activitypub\Collection\Outbox;
+use Activitypub\Activity\Activity;
 use Activitypub\Activity\Base_Object;
-use WP_UnitTestCase;
+use Activitypub\Collection\Outbox;
+use Activitypub\Collection\Actors;
+
+use function Activitypub\add_to_outbox;
 
 /**
  * Test class for Scheduler.
  *
  * @coversDefaultClass \Activitypub\Scheduler
  */
-class Test_Scheduler extends WP_UnitTestCase {
+class Test_Scheduler extends \WP_UnitTestCase {
 	/**
 	 * Test user ID.
 	 *
@@ -52,28 +55,19 @@ class Test_Scheduler extends WP_UnitTestCase {
 	 */
 	public function test_reprocess_outbox() {
 		// Create test activity objects.
-		$activity_object = new Base_Object();
-		$activity_object->set_content( 'Test Content' );
-		$activity_object->set_type( 'Note' );
-		$activity_object->set_id( 'https://example.com/test-id' );
+		$activity = new Activity();
+		$activity->set_object( array( 'content' => 'Test Content' ) );
+		$activity->set_type( 'Create' );
+		$activity->set_id( 'https://example.com/test-id' );
 
 		// Add multiple pending activities.
 		$pending_ids = array();
 		for ( $i = 0; $i < 3; $i++ ) {
-			$pending_ids[] = Outbox::add(
-				$activity_object,
-				'Create',
-				self::$user_id,
-				ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC
-			);
+			$pending_ids[] = Outbox::add( $activity, self::$user_id );
 		}
 
-		$pending_ids[] = Outbox::add(
-			$activity_object,
-			'Update',
-			self::$user_id,
-			ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC
-		);
+		$activity->set_type( 'Update' );
+		$pending_ids[] = Outbox::add( $activity, self::$user_id );
 
 		// Track scheduled events.
 		$scheduled_events = array();
@@ -96,12 +90,7 @@ class Test_Scheduler extends WP_UnitTestCase {
 		$this->assertContains( $pending_ids[3], $scheduled_events, "Activity $pending_ids[3] should be scheduled" );
 
 		// Test with published activities (should not be scheduled).
-		$published_id = Outbox::add(
-			$activity_object,
-			'Create',
-			self::$user_id,
-			ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC
-		);
+		$published_id = Outbox::add( $activity, self::$user_id );
 		wp_update_post(
 			array(
 				'ID'          => $published_id,
@@ -159,17 +148,12 @@ class Test_Scheduler extends WP_UnitTestCase {
 	 */
 	public function test_reprocess_outbox_scheduling() {
 		// Create a test activity.
-		$activity_object = new Base_Object();
-		$activity_object->set_content( 'Test Content' );
-		$activity_object->set_type( 'Note' );
-		$activity_object->set_id( 'https://example.com/test-id-2' );
+		$activity = new Activity();
+		$activity->set_object( array( 'content' => 'Test Content' ) );
+		$activity->set_type( 'Create' );
+		$activity->set_id( 'https://example.com/test-id' );
 
-		$pending_id = Outbox::add(
-			$activity_object,
-			'Create',
-			self::$user_id,
-			ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC
-		);
+		$pending_id = Outbox::add( $activity, self::$user_id );
 
 		// Track scheduled events and their timing.
 		$scheduled_time = 0;
@@ -301,5 +285,69 @@ class Test_Scheduler extends WP_UnitTestCase {
 
 		// Run async_batch with invalid callback.
 		Scheduler::async_batch( array( $mock_class, 'callback' ) );
+	}
+
+	/**
+	 * Test schedule_announce_activity method.
+	 *
+	 * @covers ::schedule_announce_activity
+	 */
+	public function test_schedule_announce_activity() {
+		// Set the actor mode to both blog and user mode.
+		\update_option( 'activitypub_actor_mode', ACTIVITYPUB_ACTOR_AND_BLOG_MODE );
+
+		$activity = new Activity();
+		$activity->set_type( 'Create' );
+		$activity->set_id( 'https://example.com/test-id' );
+
+		// Create a Note object for the activity.
+		$note = new Base_Object();
+		$note->set_type( 'Note' );
+		$note->set_content( 'Test content' );
+		$note->set_id( 'https://example.com/note/1' );
+		$activity->set_object( $note );
+
+		$outbox_activity_id = Outbox::add( $activity, self::$user_id );
+
+		$scheduled_events = array();
+		add_filter(
+			'schedule_event',
+			function ( $event ) use ( &$scheduled_events ) {
+				if ( 'activitypub_process_outbox' === $event->hook ) {
+					$scheduled_events[] = $event->args[0];
+				}
+				return $event;
+			}
+		);
+
+		Scheduler::schedule_announce_activity( $outbox_activity_id, $activity, self::$user_id, ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC );
+
+		// Get the most recent outbox item for the blog actor.
+		$announce_outbox_items = get_posts(
+			array(
+				'post_type'      => Outbox::POST_TYPE,
+				'post_author'    => Actors::BLOG_USER_ID,
+				'post_status'    => 'pending',
+				'orderby'        => 'ID',
+				'order'          => 'DESC',
+				'posts_per_page' => 1,
+			)
+		);
+
+		$this->assertNotEmpty( $announce_outbox_items, 'No announce outbox items found' );
+		$announce_outbox_id = $announce_outbox_items[0]->ID;
+
+		$this->assertCount( 1, $scheduled_events, 'Should schedule 1 event' );
+		$this->assertContains( $announce_outbox_id, $scheduled_events, 'Should schedule the announce outbox activity' );
+
+		// Check for Announce activity in the outbox.
+		$announce_post     = get_post( $announce_outbox_id );
+		$announce_activity = json_decode( $announce_post->post_content, true );
+		$this->assertEquals( 'Announce', $announce_activity['type'] );
+
+		// Clean up.
+		wp_delete_post( $outbox_activity_id, true );
+		wp_delete_post( $announce_outbox_id, true );
+		remove_all_filters( 'schedule_event' );
 	}
 }

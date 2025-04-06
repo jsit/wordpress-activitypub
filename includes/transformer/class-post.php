@@ -324,8 +324,8 @@ class Post extends Base {
 		/**
 		 * Filter the attachment IDs for a post.
 		 *
-		 * @param array   $media           The media array grouped by type.
-		 * @param WP_Post $this->item The post object.
+		 * @param array   $media The media array grouped by type.
+		 * @param WP_Post $item  The post object.
 		 *
 		 * @return array The filtered attachment IDs.
 		 */
@@ -336,8 +336,8 @@ class Post extends Base {
 		/**
 		 * Filter the attachments for a post.
 		 *
-		 * @param array   $attachments     The attachments.
-		 * @param WP_Post $this->item The post object.
+		 * @param array   $attachments The attachments.
+		 * @param WP_Post $item        The post object.
 		 *
 		 * @return array The filtered attachments.
 		 */
@@ -573,7 +573,7 @@ class Post extends Base {
 	protected function get_published() {
 		$published = \strtotime( $this->item->post_date_gmt );
 
-		return \gmdate( 'Y-m-d\TH:i:s\Z', $published );
+		return \gmdate( ACTIVITYPUB_DATE_TIME_RFC3339, $published );
 	}
 
 	/**
@@ -586,7 +586,7 @@ class Post extends Base {
 		$updated   = \strtotime( $this->item->post_modified_gmt );
 
 		if ( $updated > $published ) {
-			return \gmdate( 'Y-m-d\TH:i:s\Z', $updated );
+			return \gmdate( ACTIVITYPUB_DATE_TIME_RFC3339, $updated );
 		}
 
 		return null;

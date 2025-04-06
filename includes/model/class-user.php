@@ -170,7 +170,7 @@ class User extends Actor {
 	/**
 	 * Get the User icon.
 	 *
-	 * @return array The User icon.
+	 * @return string[] The User icon.
 	 */
 	public function get_icon() {
 		$icon = \get_user_option( 'activitypub_icon', $this->_id );
@@ -197,7 +197,7 @@ class User extends Actor {
 	/**
 	 * Returns the header image.
 	 *
-	 * @return array|null The header image.
+	 * @return string[]|null The header image.
 	 */
 	public function get_image() {
 		$header_image = get_user_option( 'activitypub_header_image', $this->_id );
@@ -227,13 +227,13 @@ class User extends Actor {
 	 * @return false|string The date the user was created.
 	 */
 	public function get_published() {
-		return \gmdate( 'Y-m-d\TH:i:s\Z', \strtotime( \get_the_author_meta( 'registered', $this->_id ) ) );
+		return \gmdate( ACTIVITYPUB_DATE_TIME_RFC3339, \strtotime( \get_the_author_meta( 'registered', $this->_id ) ) );
 	}
 
 	/**
 	 * Returns the public key.
 	 *
-	 * @return array The public key.
+	 * @return string[] The public key.
 	 */
 	public function get_public_key() {
 		return array(
@@ -291,7 +291,7 @@ class User extends Actor {
 	/**
 	 * Returns the endpoints.
 	 *
-	 * @return array|null The endpoints.
+	 * @return string[]|null The endpoints.
 	 */
 	public function get_endpoints() {
 		$endpoints = null;
@@ -417,7 +417,7 @@ class User extends Actor {
 	/**
 	 * Returns the website hosts allowed to credit this blog.
 	 *
-	 * @return array|null The attribution domains or null if not found.
+	 * @return string[]|null The attribution domains or null if not found.
 	 */
 	public function get_attribution_domains() {
 		return get_attribution_domains();
@@ -426,7 +426,7 @@ class User extends Actor {
 	/**
 	 * Returns the alsoKnownAs.
 	 *
-	 * @return array The alsoKnownAs.
+	 * @return string[] The alsoKnownAs.
 	 */
 	public function get_also_known_as() {
 		$also_known_as = array(
@@ -447,6 +447,7 @@ class User extends Actor {
 	 * @return string The movedTo.
 	 */
 	public function get_moved_to() {
-		return \get_user_option( 'activitypub_moved_to', $this->_id );
+		// phpcs:ignore Universal.Operators.DisallowShortTernary.Found
+		return \get_user_option( 'activitypub_moved_to', $this->_id ) ?: null;
 	}
 }
