@@ -8,11 +8,12 @@
 namespace Activitypub\Rest;
 
 use Activitypub\Activity\Activity;
-use Activitypub\Collection\Actors;
+use Activitypub\Moderation;
 
+use function Activitypub\camel_to_snake_case;
 use function Activitypub\get_context;
-use function Activitypub\get_rest_url_by_path;
 use function Activitypub\get_masked_wp_version;
+use function Activitypub\get_rest_url_by_path;
 
 /**
  * Actors_Inbox_Controller class.
@@ -34,10 +35,10 @@ class Actors_Inbox_Controller extends Actors_Controller {
 			array(
 				'args'   => array(
 					'user_id' => array(
-						'description' => 'The ID or username of the actor.',
-						'type'        => 'string',
-						'required'    => true,
-						'pattern'     => '[\w\-\.]+',
+						'description'       => 'The ID of the actor.',
+						'type'              => 'integer',
+						'required'          => true,
+						'validate_callback' => array( $this, 'validate_user_id' ),
 					),
 				),
 				array(
@@ -112,11 +113,6 @@ class Actors_Inbox_Controller extends Actors_Controller {
 	 */
 	public function get_items( $request ) {
 		$user_id = $request->get_param( 'user_id' );
-		$user    = Actors::get_by_various( $user_id );
-
-		if ( \is_wp_error( $user ) ) {
-			return $user;
-		}
 
 		/**
 		 * Fires before the ActivityPub inbox is created and sent to the client.
@@ -125,7 +121,7 @@ class Actors_Inbox_Controller extends Actors_Controller {
 
 		$response = array(
 			'@context'     => get_context(),
-			'id'           => get_rest_url_by_path( \sprintf( 'actors/%d/inbox', $user->get__id() ) ),
+			'id'           => get_rest_url_by_path( \sprintf( 'actors/%d/inbox', $user_id ) ),
 			'generator'    => 'https://wordpress.org/?v=' . get_masked_wp_version(),
 			'type'         => 'OrderedCollection',
 			'totalItems'   => 0,
@@ -164,37 +160,52 @@ class Actors_Inbox_Controller extends Actors_Controller {
 	 */
 	public function create_item( $request ) {
 		$user_id = $request->get_param( 'user_id' );
-		$user    = Actors::get_by_various( $user_id );
+		$data    = $request->get_json_params();
+		$type    = camel_to_snake_case( $request->get_param( 'type' ) );
 
-		if ( \is_wp_error( $user ) ) {
-			return $user;
+		/* @var Activity $activity Activity object.*/
+		$activity = Activity::init_from_array( $data );
+
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		if ( Moderation::activity_is_blocked( $activity, $user_id ) ) {
+			/**
+			 * ActivityPub inbox disallowed activity.
+			 *
+			 * @param array              $data     The data array.
+			 * @param int|null           $user_id  The user ID.
+			 * @param string             $type     The type of the activity.
+			 * @param Activity|\WP_Error $activity The Activity object.
+			 */
+			do_action( 'activitypub_rest_inbox_disallowed', $data, $user_id, $type, $activity );
+		} else {
+			/**
+			 * ActivityPub inbox action.
+			 *
+			 * @param array              $data     The data array.
+			 * @param int|null           $user_id  The user ID.
+			 * @param string             $type     The type of the activity.
+			 * @param Activity|\WP_Error $activity The Activity object.
+			 */
+			\do_action( 'activitypub_inbox', $data, $user_id, $type, $activity );
+
+			/**
+			 * ActivityPub inbox action for specific activity types.
+			 *
+			 * @param array              $data     The data array.
+			 * @param int|null           $user_id  The user ID.
+			 * @param Activity|\WP_Error $activity The Activity object.
+			 */
+			\do_action( 'activitypub_inbox_' . $type, $data, $user_id, $activity );
 		}
 
-		$data     = $request->get_json_params();
-		$activity = Activity::init_from_array( $data );
-		$type     = $request->get_param( 'type' );
-		$type     = \strtolower( $type );
-
-		/**
-		 * ActivityPub inbox action.
-		 *
-		 * @param array              $data     The data array.
-		 * @param int|null           $user_id  The user ID.
-		 * @param string             $type     The type of the activity.
-		 * @param Activity|\WP_Error $activity The Activity object.
-		 */
-		\do_action( 'activitypub_inbox', $data, $user->get__id(), $type, $activity );
-
-		/**
-		 * ActivityPub inbox action for specific activity types.
-		 *
-		 * @param array              $data     The data array.
-		 * @param int|null           $user_id  The user ID.
-		 * @param Activity|\WP_Error $activity The Activity object.
-		 */
-		\do_action( 'activitypub_inbox_' . $type, $data, $user->get__id(), $activity );
-
-		$response = \rest_ensure_response( array() );
+		$response = \rest_ensure_response(
+			array(
+				'type'   => 'https://w3id.org/fep/c180#approval-required',
+				'title'  => 'Approval Required',
+				'status' => '202',
+				'detail' => 'This activity requires approval before it can be processed.',
+			)
+		);
 		$response->set_status( 202 );
 		$response->header( 'Content-Type', 'application/activity+json; charset=' . \get_option( 'blog_charset' ) );
 

@@ -2,10 +2,10 @@
 /**
  * Advanced Settings Fields file.
  *
- * @package ActivityPub
+ * @package Activitypub
  */
 
-namespace ActivityPub\WP_Admin;
+namespace Activitypub\WP_Admin;
 
 /**
  * Advanced Settings Fields class.
@@ -50,6 +50,15 @@ class Advanced_Settings_Fields {
 			);
 		}
 
+		\add_settings_field(
+			'activitypub_content_negotiation',
+			\__( 'Content Negotiation', 'activitypub' ),
+			array( self::class, 'render_content_negotiation_field' ),
+			'activitypub_advanced_settings',
+			'activitypub_advanced_settings',
+			array( 'label_for' => 'activitypub_content_negotiation' )
+		);
+
 		if ( ! defined( 'ACTIVITYPUB_AUTHORIZED_FETCH' ) ) {
 			\add_settings_field(
 				'activitypub_authorized_fetch',
@@ -61,6 +70,24 @@ class Advanced_Settings_Fields {
 			);
 		}
 
+		\add_settings_field(
+			'activitypub_rfc9421_signature',
+			\__( 'Modern Signature Format', 'activitypub' ),
+			array( self::class, 'render_rfc9421_signature_field' ),
+			'activitypub_advanced_settings',
+			'activitypub_advanced_settings',
+			array( 'label_for' => 'activitypub_rfc9421_signature' )
+		);
+
+		\add_settings_field(
+			'activitypub_following_ui',
+			\__( 'Following User Interface', 'activitypub' ),
+			array( self::class, 'render_following_ui_field' ),
+			'activitypub_advanced_settings',
+			'activitypub_advanced_settings',
+			array( 'label_for' => 'activitypub_following_ui' )
+		);
+
 		if ( ! defined( 'ACTIVITYPUB_SHARED_INBOX_FEATURE' ) ) {
 			\add_settings_field(
 				'activitypub_shared_inbox',
@@ -71,6 +98,24 @@ class Advanced_Settings_Fields {
 				array( 'label_for' => 'activitypub_shared_inbox' )
 			);
 		}
+
+		\add_settings_field(
+			'activitypub_persist_inbox',
+			\__( 'Inbox', 'activitypub' ),
+			array( self::class, 'render_persist_inbox_field' ),
+			'activitypub_advanced_settings',
+			'activitypub_advanced_settings',
+			array( 'label_for' => 'activitypub_persist_inbox' )
+		);
+
+		\add_settings_field(
+			'activitypub_object_type',
+			\__( 'Activity-Object-Type', 'activitypub' ),
+			array( self::class, 'render_object_type_field' ),
+			'activitypub_advanced_settings',
+			'activitypub_advanced_settings',
+			array( 'label_for' => 'activitypub_object_type' )
+		);
 	}
 
 	/**
@@ -116,7 +161,7 @@ class Advanced_Settings_Fields {
 	 * Render vary header field.
 	 */
 	public static function render_vary_header_field() {
-		$value = \get_option( 'activitypub_vary_header', '0' );
+		$value = \get_option( 'activitypub_vary_header', '1' );
 		?>
 		<p>
 			<label>
@@ -126,6 +171,24 @@ class Advanced_Settings_Fields {
 		</p>
 		<p class="description">
 			<?php \esc_html_e( 'Enable this if you notice your site showing technical content instead of normal web pages, or if your ActivityPub connections seem unreliable. This setting helps your site deliver the right format of content to different services automatically.', 'activitypub' ); ?>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Render content negotiation field.
+	 */
+	public static function render_content_negotiation_field() {
+		$value = \get_option( 'activitypub_content_negotiation', '1' );
+		?>
+		<p>
+			<label>
+				<input type="checkbox" id="activitypub_content_negotiation" name="activitypub_content_negotiation" value="1" <?php checked( '1', $value ); ?> />
+				<?php \esc_html_e( 'Enable content negotiation for browsers and Fediverse services.', 'activitypub' ); ?>
+			</label>
+		</p>
+		<p class="description">
+			<?php \esc_html_e( 'Content negotiation ensures your site displays regular web pages to browsers and machine-readable data to Fediverse services. Disable this if your site shows raw technical data to visitors or if ActivityPub connections have issues.', 'activitypub' ); ?>
 		</p>
 		<?php
 	}
@@ -152,6 +215,45 @@ class Advanced_Settings_Fields {
 	}
 
 	/**
+	 * Render RFC-9421 signature field.
+	 */
+	public static function render_rfc9421_signature_field() {
+		$value = \get_option( 'activitypub_rfc9421_signature', '0' );
+		?>
+		<p>
+			<label>
+				<input type="checkbox" id="activitypub_rfc9421_signature" name="activitypub_rfc9421_signature" value="1" <?php checked( '1', $value ); ?> />
+				<?php \esc_html_e( 'Use modern signature format for Fediverse communications.', 'activitypub' ); ?>
+			</label>
+		</p>
+		<p class="description">
+			<?php \esc_html_e( 'Enables a newer standard (RFC-9421) for verifying your site&#8217;s identity when communicating with other Fediverse platforms. This alternative signature format may cause compatibility issues with platforms that do not support it. Keep disabled if you experience connection problems with certain Fediverse servers.', 'activitypub' ); ?>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Render show following UI field.
+	 */
+	public static function render_following_ui_field() {
+		$value = \get_option( 'activitypub_following_ui', '0' );
+		?>
+		<p>
+			<label>
+				<input type="checkbox" id="activitypub_following_ui" name="activitypub_following_ui" value="1" <?php checked( '1', $value ); ?> />
+				Display the "Following" interface in the admin menus and settings.
+			</label>
+		</p>
+		<p class="description">
+			Activates the Following feature, letting you follow other ActivityPub accounts directly from your WordPress site. Adds a "Following" menu and tab to manage followed accounts.
+		</p>
+		<p class="description">
+			⚠ A reader interface is not available yet. Please follow accounts sparingly—you won't be able to see their posts or shares. This feature is intended for testing the follow functionality. Once fully implemented, it will be enabled by default.
+		</p>
+		<?php
+	}
+
+	/**
 	 * Render shared inbox field.
 	 */
 	public static function render_shared_inbox_field() {
@@ -165,6 +267,42 @@ class Advanced_Settings_Fields {
 		</p>
 		<p class="description">
 			<?php \esc_html_e( 'Allows your site to handle incoming ActivityPub messages more efficiently, especially helpful for busy or multi-user sites. This feature is still in beta and may encounter issues.', 'activitypub' ); ?>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Render inbox collection persistence field.
+	 */
+	public static function render_persist_inbox_field() {
+		$value = \get_option( 'activitypub_persist_inbox', '0' );
+		?>
+		<p>
+			<label>
+				<input type="checkbox" id="activitypub_persist_inbox" name="activitypub_persist_inbox" value="1" <?php checked( '1', $value ); ?> />
+				Persist all incoming Activities.
+			</label>
+		</p>
+		<p class="description">
+			For now, this is only used for debugging purposes. If you have no actual need for this, please keep it disabled to avoid unnecessary database writes. Future versions may enable this feature by default.
+		</p>
+		<?php
+	}
+
+	/**
+	 * Render object type field.
+	 */
+	public static function render_object_type_field() {
+		$value = \get_option( 'activitypub_object_type', ACTIVITYPUB_DEFAULT_OBJECT_TYPE );
+		?>
+		<p>
+			<label>
+				<input type="checkbox" name="activitypub_object_type" value="note" <?php \checked( 'note', $value ); ?> />
+				<?php \esc_html_e( 'Use Template Tags instead of letting the plugin choose the best possible format for you.', 'activitypub' ); ?>
+			</label>
+		</p>
+		<p class="description">
+			<?php \esc_html_e( 'This is mainly for backwards compatibility. It is not recommended to use the Template Tags, because it might not be supported in future versions.', 'activitypub' ); ?>
 		</p>
 		<?php
 	}

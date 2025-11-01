@@ -7,12 +7,16 @@
 
 namespace Activitypub\Tests;
 
-use Activitypub\Collection\Followers;
-use Activitypub\Collection\Outbox;
-use Activitypub\Migration;
-use Activitypub\Comment;
-use Activitypub\Model\Follower;
+use Activitypub\Activity\Actor;
+use Activitypub\Collection\Actors;
 use Activitypub\Collection\Extra_Fields;
+use Activitypub\Collection\Followers;
+use Activitypub\Collection\Following;
+use Activitypub\Collection\Outbox;
+use Activitypub\Collection\Remote_Actors;
+use Activitypub\Comment;
+use Activitypub\Migration;
+use Activitypub\Scheduler;
 
 /**
  * Test class for Activitypub Migrate.
@@ -32,6 +36,11 @@ class Test_Migration extends \WP_UnitTestCase {
 	 * Set up the test.
 	 */
 	public static function set_up_before_class() {
+		// Mock Jetpack class if it doesn't exist.
+		if ( ! class_exists( 'Jetpack' ) ) {
+			require_once AP_TESTS_DIR . '/data/class-jetpack.php';
+		}
+
 		\remove_action( 'wp_after_insert_post', array( \Activitypub\Scheduler\Post::class, 'schedule_post_activity' ), 33 );
 		\remove_action( 'transition_comment_status', array( \Activitypub\Scheduler\Comment::class, 'schedule_comment_activity' ), 20 );
 		\remove_action( 'wp_insert_comment', array( \Activitypub\Scheduler\Comment::class, 'schedule_comment_activity_on_insert' ) );
@@ -167,23 +176,6 @@ class Test_Migration extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * Tests scheduling of migration.
-	 *
-	 * @covers ::maybe_migrate
-	 */
-	public function test_migration_scheduling() {
-		update_option( 'activitypub_db_version', '0.0.1' );
-
-		Migration::maybe_migrate();
-
-		$schedule = \wp_next_scheduled( 'activitypub_migrate', array( '0.0.1' ) );
-		$this->assertNotFalse( $schedule );
-
-		// Clean up.
-		delete_option( 'activitypub_db_version' );
-	}
-
-	/**
 	 * Test migrate to 4.1.0.
 	 *
 	 * @covers ::migrate_to_4_1_0
@@ -275,7 +267,7 @@ class Test_Migration extends \WP_UnitTestCase {
 		$this->assertEquals( "[ap_content]\n\n[ap_permalink type=\"html\"]\n\n[ap_hashtags]", $template );
 		$this->assertFalse( $content_type );
 
-		$custom = '[ap_title] [ap_content] [ap_hashcats] [ap_authorurl]';
+		$custom = '[ap_title] [ap_content] [ap_authorurl]';
 
 		\update_option( 'activitypub_post_content_type', 'custom' );
 		\update_option( 'activitypub_custom_post_content', $custom );
@@ -395,12 +387,12 @@ class Test_Migration extends \WP_UnitTestCase {
 		Comment::register_comment_types();
 
 		// Create test comments.
-		$post_id    = $this->factory->post->create(
+		$post_id    = self::factory()->post->create(
 			array(
 				'post_author' => 1,
 			)
 		);
-		$comment_id = $this->factory->comment->create(
+		$comment_id = self::factory()->comment->create(
 			array(
 				'comment_post_ID'  => $post_id,
 				'comment_approved' => '1',
@@ -416,41 +408,6 @@ class Test_Migration extends \WP_UnitTestCase {
 		// Clean up.
 		wp_delete_comment( $comment_id, true );
 		wp_delete_post( $post_id, true );
-	}
-
-	/**
-	 * Test update_comment_counts() with existing valid lock.
-	 *
-	 * @covers ::update_comment_counts
-	 */
-	public function test_update_comment_counts_with_existing_valid_lock() {
-		// Register comment types.
-		Comment::register_comment_types();
-
-		// Set a lock.
-		Migration::lock();
-
-		Migration::update_comment_counts( 10, 0 );
-
-		// Verify a scheduled event was created.
-		$next_scheduled = wp_next_scheduled(
-			'activitypub_update_comment_counts',
-			array(
-				'batch_size' => 10,
-				'offset'     => 0,
-			)
-		);
-		$this->assertNotFalse( $next_scheduled );
-
-		// Clean up.
-		delete_option( 'activitypub_migration_lock' );
-		wp_clear_scheduled_hook(
-			'activitypub_update_comment_counts',
-			array(
-				'batch_size' => 10,
-				'offset'     => 0,
-			)
-		);
 	}
 
 	/**
@@ -525,42 +482,15 @@ class Test_Migration extends \WP_UnitTestCase {
 	}
 
 	/**
-	 * Test async upgrade functionality.
-	 *
-	 * @covers ::async_upgrade
-	 * @covers ::lock
-	 * @covers ::unlock
-	 * @covers ::create_post_outbox_items
-	 */
-	public function test_async_upgrade() {
-		// Test that lock prevents simultaneous upgrades.
-		Migration::lock();
-		Migration::async_upgrade( 'create_post_outbox_items' );
-		$scheduled = \wp_next_scheduled( 'activitypub_upgrade', array( 'create_post_outbox_items' ) );
-		$this->assertNotFalse( $scheduled );
-		Migration::unlock();
-
-		// Test scheduling next batch when callback returns more work.
-		Migration::async_upgrade( 'create_post_outbox_items', 1, 0 ); // Small batch size to force multiple batches.
-		$scheduled = \wp_next_scheduled( 'activitypub_upgrade', array( 'create_post_outbox_items', 1, 1 ) );
-		$this->assertNotFalse( $scheduled );
-
-		// Test no scheduling when callback returns null (no more work).
-		Migration::async_upgrade( 'create_post_outbox_items', 100, 1000 ); // Large offset to ensure no posts found.
-		$this->assertFalse(
-			\wp_next_scheduled( 'activitypub_upgrade', array( 'create_post_outbox_items', 100, 1100 ) )
-		);
-	}
-
-	/**
 	 * Test async upgrade with multiple arguments.
 	 *
-	 * @covers ::async_upgrade
+	 * @covers ::update_comment_counts
+	 * @covers \Activitypub\Scheduler::async_batch
 	 */
 	public function test_async_upgrade_multiple_args() {
 		// Test that multiple arguments are passed correctly.
-		Migration::async_upgrade( 'update_comment_counts', 50, 100 );
-		$scheduled = \wp_next_scheduled( 'activitypub_upgrade', array( 'update_comment_counts', 50, 150 ) );
+		Scheduler::async_batch( array( Migration::class, 'update_comment_counts' ), 50, 100 );
+		$scheduled = \wp_next_scheduled( 'activitypub_async_batch', array( array( Migration::class, 'update_comment_counts' ), 50, 150 ) );
 		$this->assertFalse( $scheduled, 'Should not schedule next batch when no comments found' );
 	}
 
@@ -592,23 +522,20 @@ class Test_Migration extends \WP_UnitTestCase {
 	 * @covers ::update_actor_json_slashing
 	 */
 	public function test_update_actor_json_slashing() {
-		$follower = new Follower();
-		$follower->from_array(
-			array(
-				'type'               => 'Person',
-				'name'               => 'Test Follower',
-				'preferred_username' => 'Follower',
-				'summary'            => '<p>unescaped backslash 04\2024</p>',
-			)
+		$follower = array(
+			'id'                 => 'https://example.com/users/test',
+			'type'               => 'Person',
+			'name'               => 'Test Follower',
+			'preferred_username' => 'Follower',
+			'summary'            => '<p>unescaped backslash 04\2024</p>',
+			'endpoints'          => array(
+				'sharedInbox' => 'https://example.com/inbox',
+			),
 		);
-		$unslashed_json = $follower->to_json();
 
-		$post_id = self::factory()->post->create(
-			array(
-				'post_type'  => Followers::POST_TYPE,
-				'meta_input' => array( '_activitypub_actor_json' => $unslashed_json ),
-			)
-		);
+		$post_id = Remote_Actors::upsert( $follower );
+
+		\add_post_meta( $post_id, '_activitypub_actor_json', \wp_json_encode( $follower ) );
 
 		$original_meta = \get_post_meta( $post_id, '_activitypub_actor_json', true );
 		$this->assertNull( \json_decode( $original_meta, true ) );
@@ -707,6 +634,7 @@ class Test_Migration extends \WP_UnitTestCase {
 			wp_delete_comment( $comment_id, true );
 		}
 
+		_delete_all_data();
 		\remove_filter( 'pre_http_request', array( $this, 'mock_webfinger' ) );
 	}
 
@@ -726,8 +654,6 @@ class Test_Migration extends \WP_UnitTestCase {
 	 * Test add_default_extra_field.
 	 */
 	public function test_add_default_extra_field() {
-		$this->delete_extra_fields();
-
 		// Create a test user with ActivityPub permission.
 		$user_id = self::factory()->user->create();
 		$user    = get_user_by( 'id', $user_id );
@@ -765,24 +691,13 @@ class Test_Migration extends \WP_UnitTestCase {
 		$this->assertEquals( 'Powered by', $blog_fields[0]->post_title, 'The title should be "Powered by"' );
 		$this->assertEquals( 'WordPress', $blog_fields[0]->post_content, 'The content should be "WordPress"' );
 
-		$this->delete_extra_fields();
+		_delete_all_data();
 	}
 
 	/**
 	 * Test add_default_extra_field with multiple users.
 	 */
 	public function test_add_default_extra_field_multiple_users() {
-		$this->delete_extra_fields();
-
-		// Create multiple test users with ActivityPub permission.
-		$user_ids = array();
-		for ( $i = 0; $i < 3; $i++ ) {
-			$user_id = self::factory()->user->create();
-			$user    = get_user_by( 'id', $user_id );
-			$user->add_cap( 'activitypub' );
-			$user_ids[] = $user_id;
-		}
-
 		// Create a user without ActivityPub permission.
 		$non_ap_user_id = self::factory()->user->create();
 
@@ -791,19 +706,6 @@ class Test_Migration extends \WP_UnitTestCase {
 		$method     = $reflection->getMethod( 'add_default_extra_field' );
 		$method->setAccessible( true );
 		$method->invoke( null );
-
-		// Check extra fields for each user with ActivityPub permission.
-		foreach ( $user_ids as $user_id ) {
-			$user_fields = get_posts(
-				array(
-					'post_type'      => Extra_Fields::USER_POST_TYPE,
-					'author'         => $user_id,
-					'posts_per_page' => -1,
-				)
-			);
-
-			$this->assertCount( 1, $user_fields, "User $user_id should have one extra field" );
-		}
 
 		// Check that the user without ActivityPub permission has no extra field.
 		$non_ap_user_fields = get_posts(
@@ -816,31 +718,459 @@ class Test_Migration extends \WP_UnitTestCase {
 
 		$this->assertCount( 0, $non_ap_user_fields, 'User without ActivityPub permission should not have an extra field' );
 
-		$this->delete_extra_fields();
+		_delete_all_data();
 	}
 
 	/**
-	 * Delete extra fields.
+	 * Test update_notification_options.
+	 *
+	 * @covers ::update_notification_options
 	 */
-	private function delete_extra_fields() {
-		$user_fields = get_posts(
-			array(
-				'post_type'      => Extra_Fields::USER_POST_TYPE,
-				'posts_per_page' => -1,
-			)
-		);
-		foreach ( $user_fields as $user_field ) {
-			\wp_delete_post( $user_field->ID, true );
-		}
+	public function test_update_notification_options() {
+		// Set up test user with the ActivityPub capability.
+		$user_id1 = self::factory()->user->create();
 
-		$blog_fields = get_posts(
+		// Add the ActivityPub capability to the test users.
+		$user1 = get_user_by( 'id', $user_id1 );
+		$user1->add_cap( 'activitypub' );
+
+		// Set up the old notification options.
+		\update_option( 'activitypub_mailer_new_dm', '1' );
+		\update_option( 'activitypub_mailer_new_follower', '0' );
+		\update_option( 'activitypub_mailer_new_mention', '1' ); // This one doesn't get migrated, just added.
+
+		\delete_option( 'activitypub_blog_user_mailer_new_dm' );
+		\delete_option( 'activitypub_blog_user_mailer_new_follower' );
+		\delete_option( 'activitypub_blog_user_mailer_new_mention' );
+
+		// Run the migration method.
+		Migration::update_notification_options();
+
+		// Verify blog user notification options were created with correct values.
+		$this->assertEquals( '1', \get_option( 'activitypub_blog_user_mailer_new_dm' ), 'Blog user new DM option should match old value' );
+		$this->assertEquals( '0', \get_option( 'activitypub_blog_user_mailer_new_follower' ), 'Blog user new follower option should match old value' );
+		$this->assertEquals( '1', \get_option( 'activitypub_blog_user_mailer_new_mention' ), 'Blog user new mention option should be set to 1' );
+
+		// Verify actor notification options were created with correct values.
+		$this->assertEquals( '1', \get_user_option( 'activitypub_mailer_new_dm', $user_id1 ), 'Actor 1 new DM option should match old value' );
+		$this->assertEquals( '0', \get_user_option( 'activitypub_mailer_new_follower', $user_id1 ), 'Actor 1 new follower option should match old value' );
+		$this->assertEquals( '1', \get_user_option( 'activitypub_mailer_new_mention', $user_id1 ), 'Actor 1 new mention option should be set to 1' );
+
+		// Verify old options were deleted.
+		$this->assertFalse( \get_option( 'activitypub_mailer_new_dm' ), 'Old DM option should be deleted' );
+		$this->assertFalse( \get_option( 'activitypub_mailer_new_follower' ), 'Old follower option should be deleted' );
+
+		// Clean up.
+		\delete_option( 'activitypub_blog_user_mailer_new_dm' );
+		\delete_option( 'activitypub_blog_user_mailer_new_follower' );
+		\delete_option( 'activitypub_blog_user_mailer_new_mention' );
+		\delete_user_option( $user_id1, 'activitypub_mailer_new_dm' );
+		\delete_user_option( $user_id1, 'activitypub_mailer_new_follower' );
+		\delete_user_option( $user_id1, 'activitypub_mailer_new_mention' );
+		\wp_delete_user( $user_id1 );
+	}
+
+	/**
+	 * Test migrate followers to AP Actor CPT.
+	 *
+	 * @covers ::migrate_followers_to_ap_actor_cpt
+	 */
+	public function test_migrate_followers_to_ap_actor_cpt() {
+		$follower = self::factory()->post->create(
 			array(
-				'post_type'      => Extra_Fields::BLOG_POST_TYPE,
-				'posts_per_page' => -1,
+				'post_type' => 'ap_follower',
 			)
 		);
-		foreach ( $blog_fields as $blog_field ) {
-			\wp_delete_post( $blog_field->ID, true );
+
+		\add_post_meta( $follower, '_activitypub_user_id', '5' );
+
+		Migration::migrate_followers_to_ap_actor_cpt();
+
+		\clean_post_cache( $follower );
+
+		$this->assertEquals( Remote_Actors::POST_TYPE, \get_post_type( $follower ) );
+		$this->assertEquals( '5', \get_post_meta( $follower, Followers::FOLLOWER_META_KEY, true ) );
+
+		\wp_delete_post( $follower );
+	}
+
+	/**
+	 * Test update_actor_json_storage with valid JSON.
+	 *
+	 * @covers ::update_actor_json_storage
+	 */
+	public function test_update_actor_json_storage() {
+		$actor_array = array(
+			'id'                 => 'https://example.com/users/test',
+			'type'               => 'Person',
+			'name'               => 'Test Follower',
+			'preferred_username' => 'Follower',
+			'summary'            => '<p>HTML content</p>',
+			'endpoints'          => array(
+				'sharedInbox' => 'https://example.com/inbox',
+			),
+		);
+
+		$remote_actor = function () use ( $actor_array ) {
+			return array(
+				'code' => 200,
+				'body' => $actor_array,
+			);
+		};
+
+		\add_filter(
+			'activitypub_pre_http_get_remote_object',
+			$remote_actor
+		);
+
+		$post_id = Remote_Actors::upsert( $actor_array );
+
+		\wp_update_post(
+			array(
+				'ID'           => $post_id,
+				'post_type'    => Remote_Actors::POST_TYPE,
+				'post_excerpt' => \sanitize_text_field( \wp_kses( $actor_array['summary'], 'user_description' ) ),
+			)
+		);
+
+		\add_post_meta( $post_id, '_activitypub_actor_json', \wp_slash( \wp_json_encode( $actor_array ) ) );
+
+		$original_meta = \get_post_meta( $post_id, '_activitypub_actor_json', true );
+
+		$this->assertIsObject( \json_decode( $original_meta ) );
+
+		$result = Migration::update_actor_json_storage();
+
+		// No additional batch should be scheduled.
+		$this->assertNull( $result );
+
+		\clean_post_cache( $post_id );
+
+		$post    = \get_post( $post_id );
+		$content = \json_decode( $post->post_content, true );
+		$meta    = \get_post_meta( $post_id, '_activitypub_actor_json', true );
+
+		$this->assertEmpty( $meta, 'Updated meta should be empty' );
+		$this->assertEquals( JSON_ERROR_NONE, \json_last_error() );
+		$this->assertIsObject( \json_decode( $original_meta ) );
+		$this->assertContains( 'Test Follower', $content );
+		$this->assertContains( '<p>HTML content</p>', $content );
+
+		$actor = Actor::init_from_json( $post->post_content );
+
+		$this->assertEquals( '<p>HTML content</p>', $actor->get_summary() );
+
+		\remove_filter( 'activitypub_pre_http_get_remote_object', $remote_actor );
+		\wp_delete_post( $post_id );
+	}
+
+	/**
+	 * Test update_actor_json_storage with broken JSON.
+	 *
+	 * @covers ::update_actor_json_storage
+	 */
+	public function test_update_actor_json_storage_broken_json() {
+		$actor_array = array(
+			'id'                 => 'https://example.com/users/test',
+			'type'               => 'Person',
+			'name'               => 'Test Follower',
+			'preferred_username' => 'Follower',
+			'summary'            => '<p>HTML content</p>',
+			'endpoints'          => array(
+				'sharedInbox' => 'https://example.com/inbox',
+			),
+		);
+
+		$remote_actor = function () use ( $actor_array ) {
+			return $actor_array;
+		};
+		\add_filter( 'activitypub_pre_http_get_remote_object', $remote_actor );
+
+		$post_id = Remote_Actors::upsert( $actor_array );
+
+		\wp_update_post(
+			array(
+				'ID'           => $post_id,
+				'post_type'    => Remote_Actors::POST_TYPE,
+				'post_excerpt' => \sanitize_text_field( \wp_kses( $actor_array['summary'], 'user_description' ) ),
+			)
+		);
+
+		\add_post_meta( $post_id, '_activitypub_actor_json', 'no json' );
+
+		$original_meta = \get_post_meta( $post_id, '_activitypub_actor_json', true );
+
+		$this->assertEmpty( \json_decode( $original_meta ) );
+
+		$result = Migration::update_actor_json_storage();
+
+		// No additional batch should be scheduled.
+		$this->assertNull( $result );
+
+		\clean_post_cache( $post_id );
+
+		$post    = \get_post( $post_id );
+		$content = \json_decode( $post->post_content, true );
+		$meta    = \get_post_meta( $post_id, '_activitypub_actor_json', true );
+
+		$this->assertEmpty( $meta, 'Updated meta should be empty' );
+		$this->assertContains( 'Test Follower', $content );
+		$this->assertContains( '<p>HTML content</p>', $content );
+
+		$actor = Actor::init_from_json( $post->post_content );
+
+		$this->assertEquals( '<p>HTML content</p>', $actor->get_summary() );
+
+		\wp_delete_post( $post_id );
+	}
+
+	/**
+	 * Test remove_pending_application_user_follow_requests removes correct meta entries.
+	 *
+	 * @covers ::remove_pending_application_user_follow_requests
+	 */
+	public function test_remove_pending_application_user_follow_requests() {
+		global $wpdb;
+
+		// Create test posts with various meta entries.
+		$post1 = self::factory()->post->create();
+		$post2 = self::factory()->post->create();
+		$post3 = self::factory()->post->create();
+
+		// Add _activitypub_following meta with APPLICATION_USER_ID value.
+		\add_post_meta( $post1, '_activitypub_following', Actors::APPLICATION_USER_ID );
+		\add_post_meta( $post2, '_activitypub_following', Actors::APPLICATION_USER_ID );
+
+		// Add _activitypub_following meta with different values (should not be removed).
+		\add_post_meta( $post3, '_activitypub_following', '123' );
+		\add_post_meta( $post1, '_activitypub_following', '456' );
+
+		// Add other meta keys (should not be affected).
+		\add_post_meta( $post1, '_activitypub_other_meta', Actors::APPLICATION_USER_ID );
+		\add_post_meta( $post2, 'some_other_meta', Actors::APPLICATION_USER_ID );
+
+		// Verify initial state.
+		$initial_count = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_activitypub_following' AND meta_value = %s",
+				Actors::APPLICATION_USER_ID
+			)
+		);
+		$this->assertEquals( 2, $initial_count, 'Should have 2 _activitypub_following entries with APPLICATION_USER_ID' );
+
+		$other_following_count = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_activitypub_following' AND meta_value != %s",
+				Actors::APPLICATION_USER_ID
+			)
+		);
+		$this->assertEquals( 2, $other_following_count, 'Should have 2 _activitypub_following entries with other values' );
+
+		// Run the migration.
+		Migration::remove_pending_application_user_follow_requests();
+
+		// Verify APPLICATION_USER_ID entries were removed.
+		$remaining_count = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_activitypub_following' AND meta_value = %s",
+				Actors::APPLICATION_USER_ID
+			)
+		);
+		$this->assertEquals( 0, $remaining_count, 'All _activitypub_following entries with APPLICATION_USER_ID should be removed' );
+
+		// Verify other _activitypub_following entries remain.
+		$remaining_other_count = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_activitypub_following' AND meta_value != %s",
+				Actors::APPLICATION_USER_ID
+			)
+		);
+		$this->assertEquals( 2, $remaining_other_count, 'Other _activitypub_following entries should remain' );
+
+		// Verify other meta keys are unaffected.
+		$this->assertEquals( Actors::APPLICATION_USER_ID, \get_post_meta( $post1, '_activitypub_other_meta', true ), 'Other meta keys should not be affected' );
+		$this->assertEquals( Actors::APPLICATION_USER_ID, \get_post_meta( $post2, 'some_other_meta', true ), 'Other meta keys should not be affected' );
+
+		// Clean up.
+		\wp_delete_post( $post1, true );
+		\wp_delete_post( $post2, true );
+		\wp_delete_post( $post3, true );
+	}
+
+	/**
+	 * Test remove_pending_application_user_follow_requests with no matching entries.
+	 *
+	 * @covers ::remove_pending_application_user_follow_requests
+	 */
+	public function test_remove_pending_application_user_follow_requests_no_matches() {
+		global $wpdb;
+
+		// Create test posts with non-matching meta entries.
+		$post1 = self::factory()->post->create();
+		$post2 = self::factory()->post->create();
+
+		// Add _activitypub_following meta with different values.
+		\add_post_meta( $post1, '_activitypub_following', '123' );
+		\add_post_meta( $post2, '_activitypub_following', '456' );
+
+		// Add other meta keys with APPLICATION_USER_ID.
+		\add_post_meta( $post1, '_activitypub_other_meta', Actors::APPLICATION_USER_ID );
+		\add_post_meta( $post2, 'different_meta', Actors::APPLICATION_USER_ID );
+
+		// Get initial counts.
+		$initial_following_count = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_activitypub_following'"
+		);
+		$initial_total_count     = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			"SELECT COUNT(*) FROM {$wpdb->postmeta}"
+		);
+
+		// Run the migration.
+		Migration::remove_pending_application_user_follow_requests();
+
+		// Verify no entries were removed.
+		$final_following_count = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_activitypub_following'"
+		);
+		$final_total_count     = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			"SELECT COUNT(*) FROM {$wpdb->postmeta}"
+		);
+
+		$this->assertEquals( $initial_following_count, $final_following_count, 'No _activitypub_following entries should be removed' );
+		$this->assertEquals( $initial_total_count, $final_total_count, 'Total meta count should remain the same' );
+
+		// Verify specific entries remain.
+		$this->assertEquals( '123', \get_post_meta( $post1, '_activitypub_following', true ), '_activitypub_following with different value should remain' );
+		$this->assertEquals( '456', \get_post_meta( $post2, '_activitypub_following', true ), '_activitypub_following with different value should remain' );
+		$this->assertEquals( Actors::APPLICATION_USER_ID, \get_post_meta( $post1, '_activitypub_other_meta', true ), 'Other meta keys should not be affected' );
+		$this->assertEquals( Actors::APPLICATION_USER_ID, \get_post_meta( $post2, 'different_meta', true ), 'Other meta keys should not be affected' );
+
+		// Clean up.
+		\wp_delete_post( $post1, true );
+		\wp_delete_post( $post2, true );
+	}
+
+	/**
+	 * Test remove_pending_application_user_follow_requests with multiple APPLICATION_USER_ID entries on same post.
+	 *
+	 * @covers ::remove_pending_application_user_follow_requests
+	 */
+	public function test_remove_pending_application_user_follow_requests_multiple_entries() {
+		global $wpdb;
+
+		// Create test post.
+		$post_id = self::factory()->post->create();
+
+		// Add multiple _activitypub_following meta entries with APPLICATION_USER_ID.
+		\add_post_meta( $post_id, '_activitypub_following', Actors::APPLICATION_USER_ID );
+		\add_post_meta( $post_id, '_activitypub_following', Actors::APPLICATION_USER_ID );
+		\add_post_meta( $post_id, '_activitypub_following', Actors::APPLICATION_USER_ID );
+
+		// Add one with different value.
+		\add_post_meta( $post_id, '_activitypub_following', '789' );
+
+		// Verify initial state.
+		$initial_app_count = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_activitypub_following' AND meta_value = %s",
+				Actors::APPLICATION_USER_ID
+			)
+		);
+		$this->assertEquals( 3, $initial_app_count, 'Should have 3 APPLICATION_USER_ID entries' );
+
+		// Run the migration.
+		Migration::remove_pending_application_user_follow_requests();
+
+		// Verify all APPLICATION_USER_ID entries were removed.
+		$remaining_app_count = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key = '_activitypub_following' AND meta_value = %s",
+				Actors::APPLICATION_USER_ID
+			)
+		);
+		$this->assertEquals( 0, $remaining_app_count, 'All APPLICATION_USER_ID entries should be removed' );
+
+		// Verify the other entry remains.
+		$remaining_other_count = $wpdb->get_var( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = '_activitypub_following'",
+				$post_id
+			)
+		);
+		$this->assertEquals( 1, $remaining_other_count, 'One _activitypub_following entry should remain' );
+		$this->assertEquals( '789', \get_post_meta( $post_id, '_activitypub_following', true ), 'Non-APPLICATION_USER_ID entry should remain' );
+
+		// Clean up.
+		\wp_delete_post( $post_id, true );
+	}
+
+	/**
+	 * Test sync_jetpack_following_meta triggers actions correctly.
+	 *
+	 * @covers ::sync_jetpack_following_meta
+	 */
+	public function test_sync_jetpack_following_meta() {
+		// Create test posts with following meta.
+		$posts = self::factory()->post->create_many( 3, array( 'post_type' => Remote_Actors::POST_TYPE ) );
+
+		// Add following meta to each post.
+		\add_post_meta( $posts[0], Following::FOLLOWING_META_KEY, '123' );
+		\add_post_meta( $posts[1], Following::FOLLOWING_META_KEY, '456' );
+		\add_post_meta( $posts[2], Following::FOLLOWING_META_KEY, '789' );
+
+		// Track action calls.
+		$action_calls   = array();
+		$capture_action = function () use ( &$action_calls ) {
+			$action_calls[] = func_get_args();
+		};
+
+		\add_action( 'added_post_meta', $capture_action, 10, 4 );
+
+		// Run the migration with Jetpack available.
+		Migration::sync_jetpack_following_meta();
+
+		// Verify the correct actions were triggered.
+		$this->assertCount( 3, $action_calls, 'Should trigger action for each following meta entry' );
+
+		// Check the first action call structure.
+		$this->assertCount( 4, $action_calls[0], 'Action should be called with 4 parameters' );
+		list( $meta_id, $post_id, $meta_key, $meta_value ) = $action_calls[0];
+
+		$this->assertEquals( Following::FOLLOWING_META_KEY, $meta_key, 'Meta key should be Following::FOLLOWING_META_KEY' );
+		$this->assertIsNumeric( $meta_id, 'Meta ID should be numeric' );
+		$this->assertIsNumeric( $post_id, 'Post ID should be numeric' );
+		$this->assertContains( $meta_value, array( '123', '456', '789' ), 'Meta value should be one of the test values' );
+
+		// Clean up.
+		\remove_action( 'added_post_meta', $capture_action, 10 );
+		foreach ( $posts as $post ) {
+			\wp_delete_post( $post, true );
 		}
+	}
+
+	/**
+	 * Test sync_jetpack_following_meta with no following meta.
+	 *
+	 * @covers ::sync_jetpack_following_meta
+	 */
+	public function test_sync_jetpack_following_meta_no_entries() {
+		// Track action calls for the specific meta key we care about.
+		$following_actions = array();
+		$capture_action    = function ( $meta_id, $post_id, $meta_key, $meta_value ) use ( &$following_actions ) {
+			if ( Following::FOLLOWING_META_KEY === $meta_key ) {
+				$following_actions[] = array( $meta_id, $post_id, $meta_key, $meta_value );
+			}
+		};
+
+		\add_action( 'added_post_meta', $capture_action, 10, 4 );
+
+		// Run migration with no following meta (should not trigger our specific actions).
+		Migration::sync_jetpack_following_meta();
+
+		// Verify no following-specific actions were triggered.
+		$this->assertEmpty( $following_actions, 'No following-specific actions should be triggered when no following meta exists' );
+
+		// Clean up.
+		\remove_action( 'added_post_meta', $capture_action, 10 );
 	}
 }

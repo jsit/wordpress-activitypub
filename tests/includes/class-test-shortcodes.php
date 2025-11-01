@@ -62,6 +62,8 @@ class Test_Shortcodes extends \WP_UnitTestCase {
 	public function test_content() {
 		global $post;
 
+		remove_filter( 'the_content', 'apply_block_hooks_to_content_from_post_object', 8 );
+
 		$post               = $this->post;
 		$post->post_content = '<script>test</script>hallo<script type="javascript">{"asdf": "qwerty"}</script><style></style>';
 
@@ -104,7 +106,7 @@ class Test_Shortcodes extends \WP_UnitTestCase {
 		$content = do_shortcode( '[ap_excerpt length="25"]' );
 		wp_reset_postdata();
 
-		$this->assertEquals( "<p>Lorem ipsum dolor […]</p>\n", $content );
+		$this->assertEquals( "<p>Lorem ipsum dolor sit […]</p>\n", $content );
 	}
 
 	/**

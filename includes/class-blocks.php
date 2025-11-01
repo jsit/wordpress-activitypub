@@ -8,7 +8,6 @@
 namespace Activitypub;
 
 use Activitypub\Collection\Actors;
-use Activitypub\Collection\Followers;
 
 /**
  * Block class.
@@ -21,72 +20,38 @@ class Blocks {
 		// This is already being called on the init hook, so just add it.
 		self::register_blocks();
 
-		\add_action( 'wp_head', array( self::class, 'inject_activitypub_options' ), 11 );
-		\add_action( 'admin_print_scripts', array( self::class, 'inject_activitypub_options' ) );
 		\add_action( 'load-post-new.php', array( self::class, 'handle_in_reply_to_get_param' ) );
 		// Add editor plugin.
 		\add_action( 'enqueue_block_editor_assets', array( self::class, 'enqueue_editor_assets' ) );
-		\add_action( 'init', array( self::class, 'register_postmeta' ), 11 );
-	}
+		\add_action( 'rest_api_init', array( self::class, 'register_rest_fields' ) );
 
-	/**
-	 * Register post meta for content warnings.
-	 */
-	public static function register_postmeta() {
-		$ap_post_types = \get_post_types_by_support( 'activitypub' );
-		foreach ( $ap_post_types as $post_type ) {
-			\register_post_meta(
-				$post_type,
-				'activitypub_content_warning',
-				array(
-					'show_in_rest'      => true,
-					'single'            => true,
-					'type'              => 'string',
-					'sanitize_callback' => function ( $warning ) {
-						if ( $warning ) {
-							return \sanitize_text_field( $warning );
-						}
+		\add_filter( 'activitypub_import_mastodon_post_data', array( self::class, 'filter_import_mastodon_post_data' ), 10, 2 );
 
-						return null;
-					},
-				)
-			);
-
-			\register_post_meta(
-				$post_type,
-				'activitypub_content_visibility',
-				array(
-					'type'              => 'string',
-					'single'            => true,
-					'show_in_rest'      => true,
-					'sanitize_callback' => function ( $value ) {
-						$schema = array(
-							'type'    => 'string',
-							'enum'    => array( ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC, ACTIVITYPUB_CONTENT_VISIBILITY_QUIET_PUBLIC, ACTIVITYPUB_CONTENT_VISIBILITY_PRIVATE, ACTIVITYPUB_CONTENT_VISIBILITY_LOCAL ),
-							'default' => ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC,
-						);
-
-						if ( is_wp_error( rest_validate_enum( $value, $schema, '' ) ) ) {
-							return $schema['default'];
-						}
-
-						return $value;
-					},
-				)
-			);
-		}
+		\add_action( 'activitypub_before_get_content', array( self::class, 'add_post_transformation_callbacks' ) );
+		\add_filter( 'activitypub_the_content', array( self::class, 'remove_post_transformation_callbacks' ) );
 	}
 
 	/**
 	 * Enqueue the block editor assets.
 	 */
 	public static function enqueue_editor_assets() {
+		$data = array(
+			'namespace'        => ACTIVITYPUB_REST_NAMESPACE,
+			'defaultAvatarUrl' => ACTIVITYPUB_PLUGIN_URL . 'assets/img/mp.jpg',
+			'enabled'          => array(
+				'blog'  => ! is_user_type_disabled( 'blog' ),
+				'users' => ! is_user_type_disabled( 'user' ),
+			),
+		);
+		wp_localize_script( 'wp-editor', '_activityPubOptions', $data );
+
 		// Check for our supported post types.
 		$current_screen = \get_current_screen();
 		$ap_post_types  = \get_post_types_by_support( 'activitypub' );
 		if ( ! $current_screen || ! in_array( $current_screen->post_type, $ap_post_types, true ) ) {
 			return;
 		}
+
 		$asset_data = include ACTIVITYPUB_PLUGIN_DIR . 'build/editor-plugin/plugin.asset.php';
 		$plugin_url = plugins_url( 'build/editor-plugin/plugin.js', ACTIVITYPUB_PLUGIN_FILE );
 		wp_enqueue_script( 'activitypub-block-editor', $plugin_url, $asset_data['dependencies'], $asset_data['version'], true );
@@ -108,93 +73,63 @@ class Blocks {
 	}
 
 	/**
-	 * Output ActivityPub options as a script tag.
-	 */
-	public static function inject_activitypub_options() {
-		$data = array(
-			'namespace'        => ACTIVITYPUB_REST_NAMESPACE,
-			'defaultAvatarUrl' => ACTIVITYPUB_PLUGIN_URL . 'assets/img/mp.jpg',
-			'enabled'          => array(
-				'site'  => ! is_user_type_disabled( 'blog' ),
-				'users' => ! is_user_type_disabled( 'user' ),
-			),
-		);
-
-		printf(
-			"\n<script>var _activityPubOptions = %s;</script>",
-			wp_json_encode( $data )
-		);
-	}
-
-	/**
 	 * Register the blocks.
 	 */
 	public static function register_blocks() {
-		\register_block_type_from_metadata(
-			ACTIVITYPUB_PLUGIN_DIR . '/build/followers',
-			array(
-				'render_callback' => array( self::class, 'render_follower_block' ),
-			)
-		);
-		\register_block_type_from_metadata(
-			ACTIVITYPUB_PLUGIN_DIR . '/build/follow-me',
-			array(
-				'render_callback' => array( self::class, 'render_follow_me_block' ),
-			)
-		);
+		\register_block_type_from_metadata( ACTIVITYPUB_PLUGIN_DIR . '/build/follow-me' );
+		\register_block_type_from_metadata( ACTIVITYPUB_PLUGIN_DIR . '/build/followers' );
+		\register_block_type_from_metadata( ACTIVITYPUB_PLUGIN_DIR . '/build/reactions' );
+
 		\register_block_type_from_metadata(
 			ACTIVITYPUB_PLUGIN_DIR . '/build/reply',
 			array(
 				'render_callback' => array( self::class, 'render_reply_block' ),
 			)
 		);
-
-		\register_block_type_from_metadata(
-			ACTIVITYPUB_PLUGIN_DIR . '/build/reactions',
-			array(
-				'render_callback' => array( self::class, 'render_post_reactions_block' ),
-			)
-		);
 	}
 
 	/**
-	 * Render the post reactions block.
-	 *
-	 * @param array $attrs The block attributes.
-	 *
-	 * @return string The HTML to render.
+	 * Register REST fields needed for blocks.
 	 */
-	public static function render_post_reactions_block( $attrs ) {
-		if ( ! isset( $attrs['postId'] ) ) {
-			$attrs['postId'] = get_the_ID();
-		}
-
-		$wrapper_attributes = get_block_wrapper_attributes(
+	public static function register_rest_fields() {
+		// Register the post_count field for Follow Me block.
+		register_rest_field(
+			'user',
+			'post_count',
 			array(
-				'class'      => 'activitypub-reactions-block',
-				'data-attrs' => wp_json_encode( $attrs ),
+				/**
+				 * Get the number of published posts.
+				 *
+				 * @param array            $response   Prepared response array.
+				 * @param string           $field_name The field name.
+				 * @param \WP_REST_Request $request    The request object.
+				 * @return int The number of published posts.
+				 */
+				'get_callback' => function ( $response, $field_name, $request ) {
+					return (int) count_user_posts( $request->get_param( 'id' ), 'post', true );
+				},
+				'schema'       => array(
+					'description' => 'Number of published posts',
+					'type'        => 'integer',
+					'context'     => array( 'activitypub' ),
+				),
 			)
-		);
-
-		return sprintf(
-			'<div %s></div>',
-			$wrapper_attributes
 		);
 	}
 
 	/**
 	 * Get the user ID from a user string.
 	 *
-	 * @param string $user_string The user string. Can be a user ID, 'site', or 'inherit'.
+	 * @param string $user_string The user string. Can be a user ID, 'blog', or 'inherit'.
 	 * @return int|null The user ID, or null if the 'inherit' string is not supported in this context.
 	 */
-	private static function get_user_id( $user_string ) {
+	public static function get_user_id( $user_string ) {
 		if ( is_numeric( $user_string ) ) {
 			return absint( $user_string );
 		}
 
-		// If the user string is 'site', return the Blog User ID.
-		if ( 'site' === $user_string ) {
+		// If the user string is 'blog', return the Blog User ID.
+		if ( 'blog' === $user_string ) {
 			return Actors::BLOG_USER_ID;
 		}
 
@@ -235,103 +170,6 @@ class Blocks {
 	}
 
 	/**
-	 * Filter an array by a list of keys.
-	 *
-	 * @param array $data The array to filter.
-	 * @param array $keys The keys to keep.
-	 * @return array The filtered array.
-	 */
-	protected static function filter_array_by_keys( $data, $keys ) {
-		return array_intersect_key( $data, array_flip( $keys ) );
-	}
-
-	/**
-	 * Render the follow me block.
-	 *
-	 * @param array $attrs The block attributes.
-	 * @return string The HTML to render.
-	 */
-	public static function render_follow_me_block( $attrs ) {
-		$user_id = self::get_user_id( $attrs['selectedUser'] );
-		$user    = Actors::get_by_id( $user_id );
-		if ( is_wp_error( $user ) ) {
-			if ( 'inherit' === $attrs['selectedUser'] ) {
-				// If the user is 'inherit' and we couldn't determine the user, don't render anything.
-				return '<!-- Follow Me block: `inherit` mode does not display on this type of page -->';
-			} else {
-				// If the user is a specific ID and we couldn't find it, render an error message.
-				return '<!-- Follow Me block: user not found -->';
-			}
-		}
-
-		$attrs['profileData'] = self::filter_array_by_keys(
-			$user->to_array(),
-			array( 'icon', 'name', 'webfinger' )
-		);
-
-		$wrapper_attributes = get_block_wrapper_attributes(
-			array(
-				'class'      => 'activitypub-follow-me-block-wrapper',
-				'data-attrs' => wp_json_encode( $attrs ),
-			)
-		);
-		// todo: render more than an empty div?
-		return '<div ' . $wrapper_attributes . '></div>';
-	}
-
-	/**
-	 * Render the follower block.
-	 *
-	 * @param array $attrs The block attributes.
-	 *
-	 * @return string The HTML to render.
-	 */
-	public static function render_follower_block( $attrs ) {
-		$followee_user_id = self::get_user_id( $attrs['selectedUser'] );
-		if ( is_null( $followee_user_id ) ) {
-			return '<!-- Followers block: `inherit` mode does not display on this type of page -->';
-		}
-
-		$user = Actors::get_by_id( $followee_user_id );
-		if ( is_wp_error( $user ) ) {
-			return '<!-- Followers block: `' . $followee_user_id . '` not an active ActivityPub user -->';
-		}
-
-		$per_page      = absint( $attrs['per_page'] );
-		$follower_data = Followers::get_followers_with_count( $followee_user_id, $per_page );
-
-		$attrs['followerData']['total']     = $follower_data['total'];
-		$attrs['followerData']['followers'] = array_map(
-			function ( $follower ) {
-				return self::filter_array_by_keys(
-					$follower->to_array(),
-					array( 'icon', 'name', 'preferredUsername', 'url' )
-				);
-			},
-			$follower_data['followers']
-		);
-		$wrapper_attributes                 = get_block_wrapper_attributes(
-			array(
-				'aria-label' => __( 'Fediverse Followers', 'activitypub' ),
-				'class'      => 'activitypub-follower-block',
-				'data-attrs' => wp_json_encode( $attrs ),
-			)
-		);
-
-		$html = '<div ' . $wrapper_attributes . '>';
-		if ( $attrs['title'] ) {
-			$html .= '<h3>' . esc_html( $attrs['title'] ) . '</h3>';
-		}
-		$html .= '<ul>';
-		foreach ( $follower_data['followers'] as $follower ) {
-			$html .= '<li>' . self::render_follower( $follower ) . '</li>';
-		}
-		// We are only pagination on the JS side. Could be revisited but we gotta ship!
-		$html .= '</ul></div>';
-		return $html;
-	}
-
-	/**
 	 * Render the reply block.
 	 *
 	 * @param array $attrs The block attributes.
@@ -339,6 +177,10 @@ class Blocks {
 	 * @return string The HTML to render.
 	 */
 	public static function render_reply_block( $attrs ) {
+		if ( is_activitypub_request() ) {
+			$attrs['embedPost'] = false;
+		}
+
 		// Return early if no URL is provided.
 		if ( empty( $attrs['url'] ) ) {
 			return null;
@@ -361,6 +203,7 @@ class Blocks {
 			$embed = wp_oembed_get( $attrs['url'] );
 			if ( $embed ) {
 				$html .= $embed;
+				\wp_enqueue_script( 'wp-embed' );
 			}
 		}
 
@@ -381,35 +224,218 @@ class Blocks {
 	}
 
 	/**
-	 * Render a follower.
+	 * Renders a modal component that can be used by different blocks.
 	 *
-	 * @param \Activitypub\Model\Follower $follower The follower to render.
-	 *
-	 * @return string The HTML to render.
+	 * @param array $args Arguments for the modal.
 	 */
-	public static function render_follower( $follower ) {
-		$external_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" class="components-external-link__icon css-rvs7bx esh4a730" aria-hidden="true" focusable="false"><path d="M18.2 17c0 .7-.6 1.2-1.2 1.2H7c-.7 0-1.2-.6-1.2-1.2V7c0-.7.6-1.2 1.2-1.2h3.2V4.2H7C5.5 4.2 4.2 5.5 4.2 7v10c0 1.5 1.2 2.8 2.8 2.8h10c1.5 0 2.8-1.2 2.8-2.8v-3.6h-1.5V17zM14.9 3v1.5h3.7l-6.4 6.4 1.1 1.1 6.4-6.4v3.7h1.5V3h-6.3z"></path></svg>';
-		$template     =
-			'<a href="%s" title="%s" class="components-external-link activitypub-link" target="_blank" rel="external noreferrer noopener">
-				<img width="40" height="40" src="%s" class="avatar activitypub-avatar" />
-				<span class="activitypub-actor">
-					<strong class="activitypub-name">%s</strong>
-					<span class="sep">/</span>
-					<span class="activitypub-handle">@%s</span>
-				</span>
-				%s
-			</a>';
-
-		$data = $follower->to_array();
-
-		return sprintf(
-			$template,
-			esc_url( object_to_uri( $data['url'] ) ),
-			esc_attr( $data['name'] ),
-			esc_attr( $data['icon']['url'] ),
-			esc_html( $data['name'] ),
-			esc_html( $data['preferredUsername'] ),
-			$external_svg
+	public static function render_modal( $args = array() ) {
+		$defaults = array(
+			'content'    => '',
+			'id'         => '',
+			'is_compact' => false,
+			'title'      => '',
 		);
+
+		$args = \wp_parse_args( $args, $defaults );
+		?>
+
+		<div
+			class="activitypub-modal__overlay<?php echo \esc_attr( $args['is_compact'] ? ' compact' : '' ); ?>"
+			data-wp-bind--hidden="!context.modal.isOpen"
+			data-wp-watch="callbacks.handleModalEffects"
+			role="dialog"
+			aria-modal="true"
+			hidden
+		>
+			<div class="activitypub-modal__frame">
+				<?php if ( ! $args['is_compact'] || ! empty( $args['title'] ) ) : ?>
+					<div class="activitypub-modal__header">
+						<h2
+							class="activitypub-modal__title"
+							<?php if ( ! empty( $args['id'] ) ) : ?>
+								id="<?php echo \esc_attr( $args['id'] . '-title' ); ?>"
+							<?php endif; ?>
+						><?php echo \esc_html( $args['title'] ); ?></h2>
+						<button
+							type="button"
+							class="activitypub-modal__close wp-element-button wp-block-button__link"
+							data-wp-on--click="actions.closeModal"
+							aria-label="<?php echo \esc_attr__( 'Close dialog', 'activitypub' ); ?>"
+						>
+							<svg fill="currentColor" width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+								<path d="M13 11.8l6.1-6.3-1-1-6.1 6.2-6.1-6.2-1 1 6.1 6.3-6.5 6.7 1 1 6.5-6.6 6.5 6.6 1-1z"></path>
+							</svg>
+						</button>
+					</div>
+				<?php endif; ?>
+				<div class="activitypub-modal__content">
+					<?php echo $args['content']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
+				</div>
+			</div>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Converts content to blocks before saving to the database.
+	 *
+	 * @param array  $data The post data to be inserted.
+	 * @param object $post The Mastodon Create activity.
+	 *
+	 * @return array
+	 */
+	public static function filter_import_mastodon_post_data( $data, $post ) {
+		// Convert paragraphs to blocks.
+		\preg_match_all( '#<p>.*?</p>#is', $data['post_content'], $matches );
+		$blocks = \array_map(
+			function ( $paragraph ) {
+				return '<!-- wp:paragraph -->' . PHP_EOL . $paragraph . PHP_EOL . '<!-- /wp:paragraph -->' . PHP_EOL;
+			},
+			$matches[0] ?? array()
+		);
+
+		$data['post_content'] = \rtrim( \implode( PHP_EOL, $blocks ), PHP_EOL );
+
+		// Add reply block if it's a reply.
+		if ( null !== $post->object->inReplyTo ) {
+			$reply_block          = \sprintf( '<!-- wp:activitypub/reply {"url":"%1$s","embedPost":true} /-->' . PHP_EOL, \esc_url( $post->object->inReplyTo ) );
+			$data['post_content'] = $reply_block . $data['post_content'];
+		}
+
+		return $data;
+	}
+
+	/**
+	 * Add Interactivity directions to the specified element.
+	 *
+	 * @param string   $content    The block content.
+	 * @param string[] $selector   The selector for the element to add directions to.
+	 * @param string[] $attributes The attributes to add to the element.
+	 *
+	 * @return string The updated content.
+	 */
+	public static function add_directions( $content, $selector, $attributes ) {
+		$tags = new \WP_HTML_Tag_Processor( $content );
+
+		while ( $tags->next_tag( $selector ) ) {
+			foreach ( $attributes as $key => $value ) {
+				if ( 'class' === $key ) {
+					$tags->add_class( $value );
+					continue;
+				}
+
+				$tags->set_attribute( $key, $value );
+			}
+		}
+
+		return $tags->get_updated_html();
+	}
+
+	/**
+	 * Add post transformation callbacks.
+	 *
+	 * @param object $post The post object.
+	 */
+	public static function add_post_transformation_callbacks( $post ) {
+		\add_filter( 'render_block_core/embed', array( self::class, 'revert_embed_links' ), 10, 2 );
+
+		// Only transform reply link if it's the first block in the post.
+		$blocks = \parse_blocks( $post->post_content );
+		if ( ! empty( $blocks ) && 'activitypub/reply' === $blocks[0]['blockName'] ) {
+			\add_filter( 'render_block_activitypub/reply', array( self::class, 'generate_reply_link' ), 10, 2 );
+		}
+	}
+
+	/**
+	 * Remove post transformation callbacks.
+	 *
+	 * @param string $content The post content.
+	 *
+	 * @return string The updated content.
+	 */
+	public static function remove_post_transformation_callbacks( $content ) {
+		\remove_filter( 'render_block_core/embed', array( self::class, 'revert_embed_links' ) );
+		\remove_filter( 'render_block_activitypub/reply', array( self::class, 'generate_reply_link' ) );
+
+		return $content;
+	}
+
+	/**
+	 * Generate HTML @ link for reply block.
+	 *
+	 * @param string $block_content The block content.
+	 * @param array  $block         The block data.
+	 *
+	 * @return string The HTML @ link.
+	 */
+	public static function generate_reply_link( $block_content, $block ) {
+		// Unhook ourselves after first execution to ensure only the first reply block gets transformed.
+		\remove_filter( 'render_block_activitypub/reply', array( self::class, 'generate_reply_link' ) );
+
+		// Return empty string if no URL is provided.
+		if ( empty( $block['attrs']['url'] ) ) {
+			return '';
+		}
+
+		$url = $block['attrs']['url'];
+
+		// Try to get ActivityPub representation. Is likely already cached.
+		$object = Http::get_remote_object( $url );
+		if ( \is_wp_error( $object ) ) {
+			return '';
+		}
+
+		$author_url = $object['attributedTo'] ?? '';
+		if ( ! $author_url ) {
+			return '';
+		}
+
+		// Fetch author information.
+		$author = Http::get_remote_object( $author_url );
+		if ( \is_wp_error( $author ) ) {
+			return '';
+		}
+
+		// Get webfinger identifier.
+		$webfinger = '';
+		if ( ! empty( $author['webfinger'] ) ) {
+			$webfinger = \str_replace( 'acct:', '', $author['webfinger'] );
+		} elseif ( ! empty( $author['preferredUsername'] ) && ! empty( $author['url'] ) ) {
+			// Construct webfinger-style identifier from username and domain.
+			$domain    = \wp_parse_url( $author['url'], PHP_URL_HOST );
+			$webfinger = '@' . $author['preferredUsername'] . '@' . $domain;
+		}
+
+		if ( ! $webfinger ) {
+			return '';
+		}
+
+		// Generate HTML @ link.
+		return \sprintf(
+			'<p class="ap-reply-mention"><a rel="mention ugc" href="%1$s" title="%2$s">%3$s</a></p>',
+			\esc_url( $url ),
+			\esc_attr( $webfinger ),
+			\esc_html( '@' . strtok( $webfinger, '@' ) )
+		);
+	}
+
+	/**
+	 * Transform Embed blocks to block level link.
+	 *
+	 * Remote servers will simply drop iframe elements, rendering incomplete content.
+	 *
+	 * @see https://www.w3.org/TR/activitypub/#security-sanitizing-content
+	 * @see https://www.w3.org/wiki/ActivityPub/Primer/HTML
+	 *
+	 * @param string $block_content The block content (html).
+	 * @param object $block         The block object.
+	 *
+	 * @return string A block level link
+	 */
+	public static function revert_embed_links( $block_content, $block ) {
+		if ( ! isset( $block['attrs']['url'] ) ) {
+			return $block_content;
+		}
+		return '<p><a href="' . esc_url( $block['attrs']['url'] ) . '">' . $block['attrs']['url'] . '</a></p>';
 	}
 }

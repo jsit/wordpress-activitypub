@@ -7,10 +7,10 @@
 
 namespace Activitypub\WP_Admin;
 
-use Activitypub\Webfinger;
-use Activitypub\Http;
 use Activitypub\Collection\Actors;
+use Activitypub\Http;
 use Activitypub\Sanitize;
+use Activitypub\Webfinger;
 
 use function Activitypub\user_can_activitypub;
 
@@ -34,7 +34,7 @@ class Health_Check {
 	 *
 	 * @param string $type The type of results to count.
 	 *
-	 * @return array The number of critical and recommended results.
+	 * @return int|int[] The number of critical and recommended results.
 	 */
 	public static function count_results( $type = 'all' ) {
 		$tests = self::add_tests( array() );
@@ -84,7 +84,7 @@ class Health_Check {
 	public static function add_tests( $tests ) {
 		if ( user_can_activitypub( \get_current_user_id() ) ) {
 			$tests['direct']['activitypub_test_author_url'] = array(
-				'label' => \__( 'Author URL test', 'activitypub' ),
+				'label' => \__( 'Author URL Test', 'activitypub' ),
 				'test'  => array( self::class, 'test_author_url' ),
 			);
 		}
@@ -102,6 +102,11 @@ class Health_Check {
 		$tests['direct']['activitypub_test_pretty_permalinks'] = array(
 			'label' => \__( 'Pretty Permalinks Test', 'activitypub' ),
 			'test'  => array( self::class, 'test_pretty_permalinks' ),
+		);
+
+		$tests['direct']['activitypub_check_for_captcha_plugins'] = array(
+			'label' => \__( 'Check for Captcha Plugins', 'activitypub' ),
+			'test'  => array( self::class, 'test_check_for_captcha_plugins' ),
 		);
 
 		return $tests;
@@ -241,15 +246,21 @@ class Health_Check {
 				$allowed
 			);
 
+			$data       = $url->get_error_data();
+			$author_url = $resource;
+			if ( isset( $data['data'] ) && \is_string( $data['data'] ) ) {
+				$author_url = $data['data'];
+			}
+
 			$health_messages = array(
 				'webfinger_url_not_accessible'   => \sprintf(
 					$not_accessible,
-					$url->get_error_data()['data']
+					$author_url
 				),
 				'webfinger_url_invalid_response' => \sprintf(
 					// translators: %s: Author URL.
 					$invalid_response,
-					$url->get_error_data()['data']
+					$author_url
 				),
 			);
 			$message         = null;
@@ -320,15 +331,27 @@ class Health_Check {
 			'private' => false,
 		);
 
-		$info['activitypub']['fields']['authorized_fetch'] = array(
-			'label'   => \__( 'Authorized Fetch', 'activitypub' ),
-			'value'   => \esc_attr( (int) \get_option( 'activitypub_authorized_fetch', '0' ) ),
+		$info['activitypub']['fields']['activitypub_outbox_purge_days'] = array(
+			'label'   => \__( 'Outbox Retention Period', 'activitypub' ),
+			'value'   => \esc_attr( (int) \get_option( 'activitypub_outbox_purge_days', 180 ) ),
 			'private' => false,
 		);
 
 		$info['activitypub']['fields']['vary_header'] = array(
 			'label'   => \__( 'Vary Header', 'activitypub' ),
-			'value'   => \esc_attr( (int) \get_option( 'activitypub_vary_header', '0' ) ),
+			'value'   => \esc_attr( (int) \get_option( 'activitypub_vary_header', '1' ) ),
+			'private' => false,
+		);
+
+		$info['activitypub']['fields']['content_negotiation'] = array(
+			'label'   => \__( 'Content Negotiation', 'activitypub' ),
+			'value'   => \esc_attr( (int) \get_option( 'activitypub_content_negotiation', '1' ) ),
+			'private' => false,
+		);
+
+		$info['activitypub']['fields']['authorized_fetch'] = array(
+			'label'   => \__( 'Authorized Fetch', 'activitypub' ),
+			'value'   => \esc_attr( (int) \get_option( 'activitypub_authorized_fetch', '0' ) ),
 			'private' => false,
 		);
 
@@ -338,13 +361,13 @@ class Health_Check {
 			'private' => false,
 		);
 
-		$consts = get_defined_constants( true );
+		$constants = get_defined_constants( true );
 
-		if ( ! isset( $consts['user'] ) ) {
+		if ( ! isset( $constants['user'] ) ) {
 			return $info;
 		}
 
-		foreach ( $consts['user'] as $key => $value ) {
+		foreach ( $constants['user'] as $key => $value ) {
 			if ( ! str_starts_with( $key, 'ACTIVITYPUB_' ) ) {
 				continue;
 			}
@@ -385,9 +408,12 @@ class Health_Check {
 			$result['label']          = \__( 'Threaded (nested) comments are not enabled', 'activitypub' );
 			$result['badge']['color'] = 'orange';
 			$result['description']    = \sprintf(
-				'<p>%s</p><p>%s</p>',
-				\__( 'This is particularly important for fediverse users, as they rely on the visual hierarchy to understand conversation threads across different platforms. Without threaded comments, it becomes much more difficult to follow discussions that span multiple platforms in the fediverse.', 'activitypub' ),
-				\sprintf(
+				'<p>%s</p>',
+				\__( 'This is particularly important for fediverse users, as they rely on the visual hierarchy to understand conversation threads across different platforms. Without threaded comments, it becomes much more difficult to follow discussions that span multiple platforms in the fediverse.', 'activitypub' )
+			);
+			$result['actions']        = sprintf(
+				'<p>%s</p>',
+				sprintf(
 					// translators: %s: Discussion settings URL.
 					\__( 'You can enable them in the <a href="%s">Discussion Settings</a>.', 'activitypub' ),
 					esc_url( admin_url( 'options-discussion.php' ) )
@@ -445,6 +471,77 @@ class Health_Check {
 				)
 			);
 		}
+
+		return $result;
+	}
+
+	/**
+	 * Check for Captcha Plugins.
+	 *
+	 * @return array The test result.
+	 */
+	public static function test_check_for_captcha_plugins() {
+		$result = array(
+			'label'       => \__( 'Check for Captcha Plugins', 'activitypub' ),
+			'status'      => 'good',
+			'badge'       => array(
+				'label' => \__( 'ActivityPub', 'activitypub' ),
+				'color' => 'green',
+			),
+			'description' => \sprintf(
+				'<p>%s</p>',
+				\__( 'No Captcha plugins were found that could interfere with ActivityPub functionality.', 'activitypub' )
+			),
+			'actions'     => '',
+			'test'        => 'test_check_for_captcha_plugins',
+		);
+
+		$active_plugins = (array) \get_option( 'active_plugins', array() );
+
+		// search for the word 'captcha' in the list of active plugins.
+		$captcha_plugins = array_filter(
+			$active_plugins,
+			function ( $plugin ) {
+				return \str_contains( strtolower( $plugin ), 'captcha' );
+			}
+		);
+
+		if ( ! $captcha_plugins ) {
+			return $result;
+		}
+
+		// Get nice plugin names instead of file paths using WordPress built-in functions.
+		$all_plugins          = \get_plugins();
+		$captcha_plugin_names = array_map(
+			function ( $plugin_file ) use ( $all_plugins ) {
+				if ( isset( $all_plugins[ $plugin_file ]['Name'] ) ) {
+					return $all_plugins[ $plugin_file ]['Name'];
+				}
+				return false;
+			},
+			$captcha_plugins
+		);
+
+		$result['status']         = 'recommended';
+		$result['label']          = \__( 'Captcha plugins detected', 'activitypub' );
+		$result['badge']['color'] = 'orange';
+		$result['description']    = \sprintf(
+			'<p>%s</p><p>%s</p>',
+			\sprintf(
+				/* translators: %s: List of captcha plugins. */
+				\esc_html__( 'The following Captcha plugins are active and may interfere with ActivityPub functionality: %s', 'activitypub' ),
+				implode( ', ', array_map( 'esc_html', array_filter( $captcha_plugin_names ) ) )
+			),
+			\__( 'Captcha plugins require verification for comment submissions, but some may not distinguish between regular comments and those sent via an API (such as from ActivityPub). As a result, federated comments might be blocked because they cannot provide a Captcha response. If you experience missing comments, try disabling the Captcha plugin to determine if it resolves the issue.', 'activitypub' )
+		);
+		$result['actions'] = \sprintf(
+			'<p>%s</p>',
+			\sprintf(
+				// translators: %s: Plugin page URL.
+				\__( 'They can be disabled from the <a href="%s">Plugin Page</a>.', 'activitypub' ),
+				esc_url( admin_url( 'plugins.php?s=captcha&plugin_status=all' ) )
+			)
+		);
 
 		return $result;
 	}

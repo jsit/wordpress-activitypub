@@ -2,10 +2,14 @@
 /**
  * ActivityPub Blog Settings Fields Handler.
  *
- * @package ActivityPub
+ * @package Activitypub
  */
 
 namespace Activitypub\WP_Admin;
+
+use Activitypub\Collection\Actors;
+use Activitypub\Collection\Extra_Fields;
+use Activitypub\Model\Blog;
 
 /**
  * Class to handle all blog settings fields and callbacks.
@@ -22,6 +26,11 @@ class Blog_Settings_Fields {
 	 * Register all settings fields.
 	 */
 	public static function register_settings() {
+		// If we're in blog mode, and we're on the blog profile tab, mark the profile setup step as done.
+		if ( isset( $_GET['tab'] ) && 'blog-profile' === \sanitize_key( $_GET['tab'] ) && ACTIVITYPUB_BLOG_MODE === \get_option( 'activitypub_actor_mode' ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			\update_option( 'activitypub_checklist_profile_setup_visited', '1' );
+		}
+
 		add_settings_section(
 			'activitypub_blog_profile',
 			__( 'Blog Profile', 'activitypub' ),
@@ -61,6 +70,14 @@ class Blog_Settings_Fields {
 			'activitypub_blog_settings',
 			'activitypub_blog_profile',
 			array( 'label_for' => 'activitypub_blog_description' )
+		);
+
+		\add_settings_field(
+			'activitypub_notifications',
+			\esc_html__( 'Email Notifications', 'activitypub' ),
+			array( self::class, 'notifications_callback' ),
+			'activitypub_blog_settings',
+			'activitypub_blog_profile'
 		);
 
 		add_settings_field(
@@ -153,7 +170,7 @@ class Blog_Settings_Fields {
 	public static function profile_id_callback() {
 		?>
 		<label for="activitypub_blog_identifier">
-			<input id="activitypub_blog_identifier" class="blog-user-identifier" name="activitypub_blog_identifier" type="text" value="<?php echo esc_attr( get_option( 'activitypub_blog_identifier', \Activitypub\Model\Blog::get_default_username() ) ); ?>" />
+			<input id="activitypub_blog_identifier" class="blog-user-identifier" name="activitypub_blog_identifier" type="text" value="<?php echo esc_attr( get_option( 'activitypub_blog_identifier', Blog::get_default_username() ) ); ?>" />
 			@<?php echo esc_html( wp_parse_url( home_url(), PHP_URL_HOST ) ); ?>
 		</label>
 		<p class="description">
@@ -188,6 +205,34 @@ class Blog_Settings_Fields {
 	}
 
 	/**
+	 * Notifications field callback.
+	 */
+	public static function notifications_callback() {
+		?>
+		<fieldset id="activitypub-notifications">
+			<p>
+				<label>
+					<input type="checkbox" name="activitypub_blog_user_mailer_new_follower" id="activitypub_blog_user_mailer_new_follower" value="1" <?php \checked( '1', \get_option( 'activitypub_blog_user_mailer_new_follower', '1' ) ); ?> />
+					<?php \esc_html_e( 'New Followers', 'activitypub' ); ?>
+				</label>
+			</p>
+			<p>
+				<label>
+					<input type="checkbox" name="activitypub_blog_user_mailer_new_dm" id="activitypub_blog_user_mailer_new_dm" value="1" <?php \checked( '1', \get_option( 'activitypub_blog_user_mailer_new_dm', '1' ) ); ?> />
+					<?php \esc_html_e( 'Direct Messages', 'activitypub' ); ?>
+				</label>
+			</p>
+			<p>
+				<label>
+					<input type="checkbox" name="activitypub_blog_user_mailer_new_mention" id="activitypub_blog_user_mailer_new_mention" value="1" <?php \checked( '1', \get_option( 'activitypub_blog_user_mailer_new_mention', '1' ) ); ?> />
+					<?php \esc_html_e( 'New Mentions', 'activitypub' ); ?>
+				</label>
+			</p>
+		</fieldset>
+		<?php
+	}
+
+	/**
 	 * Extra fields callback.
 	 */
 	public static function extra_fields_callback() {
@@ -198,7 +243,7 @@ class Blog_Settings_Fields {
 
 		<table class="widefat striped activitypub-extra-fields" role="presentation" style="margin: 15px 0;">
 		<?php
-		$extra_fields = \Activitypub\Collection\Extra_Fields::get_actor_fields( \Activitypub\Collection\Actors::BLOG_USER_ID );
+		$extra_fields = Extra_Fields::get_actor_fields( Actors::BLOG_USER_ID );
 
 		if ( empty( $extra_fields ) ) :
 			?>
@@ -253,7 +298,7 @@ class Blog_Settings_Fields {
 			<?php esc_html_e( 'If you’re moving from another account to this one, you’ll need to create an alias here first before transferring your followers. This step is safe, reversible, and doesn’t affect anything on its own. The migration itself is initiated from your old account.', 'activitypub' ); ?>
 		</p>
 		<p class="description">
-			<?php esc_html_e( 'Enter one URL per line.', 'activitypub' ); ?>
+		<?php echo \wp_kses_post( \__( 'Enter one account per line. Profile links or usernames like <code>@username@example.com</code> are accepted and will be automatically normalized to the correct format.', 'activitypub' ) ); ?>
 		</p>
 		<?php
 	}

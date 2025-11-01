@@ -20,49 +20,6 @@ namespace Activitypub\Activity;
  * 'Base_' for this reason.
  *
  * @see https://www.w3.org/TR/activitystreams-core/#object
- *
- * @method string|null             get_actor()         Gets one or more entities that performed or are expected to perform the activity.
- * @method string|null             get_attributed_to() Gets the entity attributed as the original author.
- * @method array|null              get_attachment()    Gets the attachment property of the object.
- * @method array|null              get_cc()            Gets the secondary recipients of the object.
- * @method string|null             get_content()       Gets the content property of the object.
- * @method array|null              get_icon()          Gets the icon property of the object.
- * @method string|null             get_id()            Gets the object's unique global identifier.
- * @method array|null              get_image()         Gets the image property of the object.
- * @method array|string|null       get_in_reply_to()   Gets the objects this object is in reply to.
- * @method string|null             get_name()          Gets the natural language name of the object.
- * @method Base_Object|string|null get_object()        Gets the direct object of the activity.
- * @method string|null             get_published()     Gets the date and time the object was published in ISO 8601 format.
- * @method string|null             get_summary()       Gets the natural language summary of the object.
- * @method array|null              get_tag()           Gets the tag property of the object.
- * @method array|string|null       get_to()            Gets the primary recipients of the object.
- * @method string                  get_type()          Gets the type of the object.
- * @method string|null             get_updated()       Gets the date and time the object was updated in ISO 8601 format.
- * @method string|null             get_url()           Gets the URL of the object.
- *
- * @method string|array add_cc( string|array $cc ) Adds one or more entities to the secondary audience of the object.
- * @method string|array add_to( string|array $to ) Adds one or more entities to the primary audience of the object.
- *
- * @method Base_Object set_actor( string|array $actor )           Sets one or more entities that performed the activity.
- * @method Base_Object set_attachment( array $attachment )        Sets the attachment property of the object.
- * @method Base_Object set_attributed_to( string $attributed_to ) Sets the entity attributed as the original author.
- * @method Base_Object set_cc( array|string $cc )                 Sets the secondary recipients of the object.
- * @method Base_Object set_content( string $content )             Sets the content property of the object.
- * @method Base_Object set_content_map( array $content_map )      Sets the content property of the object.
- * @method Base_Object set_icon( array $icon )                    Sets the icon property of the object.
- * @method Base_Object set_id( string $id )                       Sets the object's unique global identifier.
- * @method Base_Object set_image( array $image )                  Sets the image property of the object.
- * @method Base_Object set_name( string $name )                   Sets the natural language name of the object.
- * @method Base_Object set_origin( string $origin )               Sets the origin property of the object.
- * @method Base_Object set_published( string $published )         Sets the date and time the object was published in ISO 8601 format.
- * @method Base_Object set_sensitive( bool $sensitive )           Sets the sensitive property of the object.
- * @method Base_Object set_summary( string $summary )             Sets the natural language summary of the object.
- * @method Base_Object set_summary_map( array|null $summary_map ) Sets the summary property of the object.
- * @method Base_Object set_target( string $target )               Sets the target property of the object.
- * @method Base_Object set_to( array|string $to )                 Sets the primary recipients of the object.
- * @method Base_Object set_type( string $type )                   Sets the type of the object.
- * @method Base_Object set_updated( string $updated )             Sets the date and time the object was updated in ISO 8601 format.
- * @method Base_Object set_url( string $url )                     Sets the URL of the object.
  */
 class Base_Object extends Generic_Object {
 	/**
@@ -73,8 +30,42 @@ class Base_Object extends Generic_Object {
 	const JSON_LD_CONTEXT = array(
 		'https://www.w3.org/ns/activitystreams',
 		array(
-			'Hashtag'   => 'as:Hashtag',
-			'sensitive' => 'as:sensitive',
+			'Hashtag'           => 'as:Hashtag',
+			'sensitive'         => 'as:sensitive',
+			'dcterms'           => 'http://purl.org/dc/terms/',
+			'gts'               => 'https://gotosocial.org/ns#',
+			'interactionPolicy' => array(
+				'@id'   => 'gts:interactionPolicy',
+				'@type' => '@id',
+			),
+			'canQuote'          => array(
+				'@id'   => 'gts:canQuote',
+				'@type' => '@id',
+			),
+			'canReply'          => array(
+				'@id'   => 'gts:canReply',
+				'@type' => '@id',
+			),
+			'canLike'           => array(
+				'@id'   => 'gts:canLike',
+				'@type' => '@id',
+			),
+			'canAnnounce'       => array(
+				'@id'   => 'gts:canAnnounce',
+				'@type' => '@id',
+			),
+			'automaticApproval' => array(
+				'@id'   => 'gts:automaticApproval',
+				'@type' => '@id',
+			),
+			'manualApproval'    => array(
+				'@id'   => 'gts:manualApproval',
+				'@type' => '@id',
+			),
+			'always'            => array(
+				'@id'   => 'gts:always',
+				'@type' => '@id',
+			),
 		),
 	);
 
@@ -132,7 +123,7 @@ class Base_Object extends Generic_Object {
 
 	/**
 	 * One or more entities that represent the total population of
-	 * entities for which the object can considered to be relevant.
+	 * entities for which the object can be considered to be relevant.
 	 *
 	 * @see https://www.w3.org/TR/activitystreams-vocabulary/#dfn-audience
 	 *
@@ -395,9 +386,9 @@ class Base_Object extends Generic_Object {
 
 	/**
 	 * When the object describes a time-bound resource, such as an audio
-	 * or video, a meeting, etc, the duration property indicates the
+	 * or video, a meeting, etc., the duration property indicates the
 	 * object's approximate duration.
-	 * The value MUST be expressed as an xsd:duration as defined by
+	 * The value MUST be expressed as a xsd:duration as defined by
 	 * xmlschema11-2, section 3.3.6 (e.g. a period of 5 seconds is
 	 * represented as "PT5S").
 	 *
@@ -414,7 +405,7 @@ class Base_Object extends Generic_Object {
 	 *
 	 * @see https://www.w3.org/TR/activitypub/#source-property
 	 *
-	 * @var array
+	 * @var array|null
 	 */
 	protected $source;
 
@@ -434,7 +425,7 @@ class Base_Object extends Generic_Object {
 	 *
 	 * @see https://www.w3.org/TR/activitypub/#likes
 	 *
-	 * @var array
+	 * @var array|null
 	 */
 	protected $likes;
 
@@ -444,7 +435,7 @@ class Base_Object extends Generic_Object {
 	 *
 	 * @see https://www.w3.org/TR/activitypub/#shares
 	 *
-	 * @var array
+	 * @var array|null
 	 */
 	protected $shares;
 
@@ -455,9 +446,32 @@ class Base_Object extends Generic_Object {
 	 *
 	 * @see https://docs.joinmastodon.org/spec/activitypub/#sensitive
 	 *
-	 * @var boolean
+	 * @var boolean|null
 	 */
 	protected $sensitive;
+
+	/**
+	 * The dcterms namespace.
+	 *
+	 * @see https://codeberg.org/fediverse/fep/src/branch/main/fep/b2b8/fep-b2b8.md#sensitive
+	 * @see https://www.dublincore.org/specifications/dublin-core/dcmi-terms/
+	 *
+	 * @var array|null
+	 */
+	protected $dcterms;
+
+	/**
+	 * Interaction policy is an attempt to limit the harmful effects of unwanted replies and
+	 * other interactions on a user's posts (e.g., "reply guys").
+	 *
+	 * It is also used by Mastodon to limit the ability to quote posts.
+	 *
+	 * @see https://docs.gotosocial.org/en/latest/federation/interaction_policy/
+	 * @see https://blog.joinmastodon.org/2025/09/introducing-quote-posts/
+	 *
+	 * @var array|null
+	 */
+	protected $interaction_policy;
 
 	/**
 	 * Generic getter.

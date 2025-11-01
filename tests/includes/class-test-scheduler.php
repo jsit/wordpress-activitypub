@@ -2,16 +2,20 @@
 /**
  * Test file for Scheduler class.
  *
- * @package ActivityPub
+ * @package Activitypub
  */
 
 namespace Activitypub\Tests;
 
-use Activitypub\Scheduler;
 use Activitypub\Activity\Activity;
 use Activitypub\Activity\Base_Object;
-use Activitypub\Collection\Outbox;
 use Activitypub\Collection\Actors;
+use Activitypub\Collection\Outbox;
+use Activitypub\Collection\Remote_Actors;
+use Activitypub\Comment;
+use Activitypub\Dispatcher;
+use Activitypub\Migration;
+use Activitypub\Scheduler;
 
 use function Activitypub\add_to_outbox;
 
@@ -46,6 +50,70 @@ class Test_Scheduler extends \WP_UnitTestCase {
 	 */
 	public static function wpTearDownAfterClass() {
 		wp_delete_user( self::$user_id );
+	}
+
+	/**
+	 * Test unschedule events for item.
+	 *
+	 * @covers ::unschedule_events_for_item
+	 */
+	public function test_unschedule_events_for_item() {
+		// Create test activity objects.
+		$activity = new Activity();
+		$activity->set_type( 'Create' );
+		$activity->set_id( 'https://example.com/test-id' );
+		$activity->set_object(
+			array(
+				'id'      => 'https://example.com/test-id',
+				'type'    => 'Note',
+				'content' => 'Test Content',
+			)
+		);
+
+		// Add pending activity.
+		$create_item_id = add_to_outbox( $activity, null, self::$user_id );
+
+		// Track scheduled events.
+		$scheduled_events = array();
+		\add_filter(
+			'schedule_event',
+			function ( $event ) use ( &$scheduled_events ) {
+				if ( 'activitypub_retry_activity' === $event->hook ) {
+					$scheduled_events[] = $event->args[1];
+				}
+				return $event;
+			}
+		);
+
+		$schedule_retry = new \ReflectionMethod( Dispatcher::class, 'schedule_retry' );
+		$schedule_retry->setAccessible( true );
+
+		// Invoke the method.
+		$schedule_retry->invoke( null, array( 'https://example.com/inbox' ), $create_item_id ); // null for static methods.
+
+		$this->assertCount( 1, $scheduled_events, 'Should schedule 1 retry event.' );
+		$this->assertContains( $create_item_id, $scheduled_events, "Activity $create_item_id should be scheduled" );
+
+		// Track unscheduled events.
+		\add_filter(
+			'pre_unschedule_event',
+			function ( $pre, $timestamp, $hook, $args ) use ( &$scheduled_events ) {
+				if ( 'activitypub_retry_activity' === $hook ) {
+					$scheduled_events = \array_diff( $scheduled_events, array( $args[1] ) );
+				}
+				return $pre;
+			},
+			10,
+			4
+		);
+
+		Scheduler::unschedule_events_for_item( $create_item_id );
+
+		$this->assertCount( 0, $scheduled_events, 'Should have no retry events.' );
+		$this->assertNotContains( $create_item_id, $scheduled_events, "Activity $create_item_id should no longer be scheduled" );
+
+		\remove_all_filters( 'schedule_event' );
+		\remove_all_filters( 'pre_unschedule_event' );
 	}
 
 	/**
@@ -203,6 +271,9 @@ class Test_Scheduler extends \WP_UnitTestCase {
 				'post_type'   => Outbox::POST_TYPE,
 				'post_status' => 'publish',
 				'post_date'   => gmdate( 'Y-m-d H:i:s', strtotime( '-1 month' ) ),
+				'meta_input'  => array(
+					'_activitypub_activity_type' => wp_rand( 0, 1 ) ? 'Create' : 'Update',
+				),
 			)
 		);
 		self::factory()->post->create_many(
@@ -211,6 +282,20 @@ class Test_Scheduler extends \WP_UnitTestCase {
 				'post_type'   => Outbox::POST_TYPE,
 				'post_status' => 'publish',
 				'post_date'   => gmdate( 'Y-m-d H:i:s', strtotime( '-7 months' ) ),
+				'meta_input'  => array(
+					'_activitypub_activity_type' => wp_rand( 0, 1 ) ? 'Create' : 'Update',
+				),
+			)
+		);
+		self::factory()->post->create_many(
+			5,
+			array(
+				'post_type'   => Outbox::POST_TYPE,
+				'post_date'   => gmdate( 'Y-m-d H:i:s', strtotime( '-7 months' ) ),
+				'post_status' => 'publish',
+				'meta_input'  => array(
+					'_activitypub_activity_type' => 'Follow',
+				),
 			)
 		);
 
@@ -218,7 +303,7 @@ class Test_Scheduler extends \WP_UnitTestCase {
 		wp_cache_delete( _count_posts_cache_key( Outbox::POST_TYPE ), 'counts' );
 
 		// Assert that 5 posts were deleted, leaving 25.
-		$this->assertEquals( 25, wp_count_posts( Outbox::POST_TYPE )->publish );
+		$this->assertEquals( 30, wp_count_posts( Outbox::POST_TYPE )->publish );
 	}
 
 	/**
@@ -257,6 +342,9 @@ class Test_Scheduler extends \WP_UnitTestCase {
 				'post_type'   => Outbox::POST_TYPE,
 				'post_date'   => gmdate( 'Y-m-d H:i:s', strtotime( '-4 months' ) ),
 				'post_status' => 'publish',
+				'meta_input'  => array(
+					'_activitypub_activity_type' => wp_rand( 0, 1 ) ? 'Create' : 'Update',
+				),
 			)
 		);
 
@@ -279,6 +367,69 @@ class Test_Scheduler extends \WP_UnitTestCase {
 	}
 
 	/**
+	 * Test update_comment_counts() with existing valid lock.
+	 *
+	 * @covers ::lock
+	 * @covers ::async_batch
+	 */
+	public function test_update_comment_counts_with_existing_valid_lock() {
+		// Register comment types.
+		Comment::register_comment_types();
+
+		$callback = array( Migration::class, 'update_comment_counts' );
+		$key      = \md5( \serialize( $callback ) ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize
+
+		// Set a lock.
+		Scheduler::lock( $key );
+
+		\do_action( 'activitypub_update_comment_counts', 10, 0 );
+
+		// Verify a scheduled event was created.
+		$next_scheduled = wp_next_scheduled( 'activitypub_update_comment_counts', array( 10, 0 ) );
+		$this->assertNotFalse( $next_scheduled );
+
+		// Clean up.
+		delete_option( 'activitypub_migration_lock' );
+		wp_clear_scheduled_hook( 'activitypub_update_comment_counts', array( 10, 0 ) );
+	}
+
+	/**
+	 * Test async upgrade functionality.
+	 *
+	 * @covers ::async_batch
+	 * @covers ::lock
+	 * @covers ::unlock
+	 */
+	public function test_async_upgrade() {
+		$callback = array( Migration::class, 'create_post_outbox_items' );
+		$key      = \md5( \serialize( $callback ) ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize
+
+		// Test that lock prevents simultaneous upgrades.
+		Scheduler::lock( $key );
+
+		\do_action( 'activitypub_create_post_outbox_items', 10, 0 );
+
+		$scheduled = \wp_next_scheduled( 'activitypub_create_post_outbox_items', array( 10, 0 ) );
+		$this->assertNotFalse( $scheduled );
+		Scheduler::unlock( $key );
+
+		\remove_action( 'transition_post_status', array( \Activitypub\Scheduler\Post::class, 'schedule_post_activity' ), 33 );
+		self::factory()->post->create( array( 'meta_input' => array( 'activitypub_status' => 'federated' ) ) );
+		\add_action( 'transition_post_status', array( \Activitypub\Scheduler\Post::class, 'schedule_post_activity' ), 33, 3 );
+
+		// Test scheduling next batch when callback returns more work.
+		\do_action( 'activitypub_create_post_outbox_items', 1, 0 ); // Small batch size to force multiple batches.
+		$scheduled = \wp_next_scheduled( 'activitypub_create_post_outbox_items', array( 1, 1 ) );
+		$this->assertNotFalse( $scheduled );
+
+		// Test no scheduling when callback returns null (no more work).
+		\do_action( 'activitypub_create_post_outbox_items', 100, 1000 ); // Large offset to ensure no posts found.
+		$this->assertFalse(
+			\wp_next_scheduled( 'activitypub_create_post_outbox_items', array( 100, 1100 ) )
+		);
+	}
+
+	/**
 	 * Test async_batch method.
 	 *
 	 * @covers ::async_batch
@@ -295,8 +446,8 @@ class Test_Scheduler extends \WP_UnitTestCase {
 		$mock_class->expects( $this->never() )
 			->method( 'callback' );
 
-		// Run async_batch with invalid callback.
-		Scheduler::async_batch( array( $mock_class, 'callback' ) );
+		// Run async_batch without registered callback.
+		Scheduler::async_batch();
 	}
 
 	/**
@@ -361,5 +512,72 @@ class Test_Scheduler extends \WP_UnitTestCase {
 		wp_delete_post( $outbox_activity_id, true );
 		wp_delete_post( $announce_outbox_id, true );
 		remove_all_filters( 'schedule_event' );
+	}
+
+	/**
+	 * Test cleanup_remote_actors method.
+	 *
+	 * @covers ::cleanup_remote_actors
+	 */
+	public function test_cleanup_remote_actors() {
+		// Mock actor metadata.
+		\add_filter(
+			'activitypub_pre_http_get_remote_object',
+			function () {
+				return array(
+					'type'              => 'Person',
+					'name'              => 'Test User',
+					'preferredUsername' => 'test',
+					'id'                => 'https://example.com/users/test',
+					'url'               => 'https://example.com/@test',
+					'inbox'             => 'https://example.com/users/test/inbox',
+				);
+			}
+		);
+
+		$actor = Remote_Actors::fetch_by_uri( 'https://example.com/users/test' );
+
+		for ( $i = 0; $i < 6; $i++ ) {
+			Remote_Actors::add_error( $actor->ID, 'Failed to fetch or parse metadata ' . $i );
+		}
+
+		// Track scheduled events.
+		$scheduled_events = array();
+		\add_filter(
+			'schedule_event',
+			function ( $event ) use ( &$scheduled_events ) {
+				if ( 'activitypub_delete_actor_interactions' === $event->hook ) {
+					$scheduled_events[] = array(
+						'hook' => $event->hook,
+						'args' => $event->args,
+						'time' => $event->timestamp,
+					);
+				}
+				return $event;
+			}
+		);
+		\add_filter(
+			'pre_get_remote_metadata_by_actor',
+			function () {
+				return new \WP_Error( 'no_actor', 'No actor found' );
+			}
+		);
+
+		// Run the cleanup function.
+		Scheduler::cleanup_remote_actors();
+
+		// Verify that the event was scheduled with the actor URL as parameter.
+		$this->assertCount( 1, $scheduled_events, 'Should schedule 1 event' );
+		$this->assertEquals( 'activitypub_delete_actor_interactions', $scheduled_events[0]['hook'], 'Should schedule the correct hook' );
+		$this->assertCount( 1, $scheduled_events[0]['args'], 'Should have 1 argument' );
+		$this->assertEquals( 'https://example.com/users/test', $scheduled_events[0]['args'][0], 'Should pass actor URL as parameter' );
+
+		// Verify the actor was deleted.
+		$this->assertNull( \get_post( $actor->ID ), 'Actor should be deleted' );
+
+		// Clean up.
+		\remove_all_filters( 'activitypub_pre_http_get_remote_object' );
+		\remove_all_filters( 'pre_get_remote_metadata_by_actor' );
+		\remove_all_filters( 'schedule_event' );
 	}
 }

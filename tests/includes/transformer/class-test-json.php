@@ -2,13 +2,13 @@
 /**
  * Test file for JSON transformer.
  *
- * @package ActivityPub
+ * @package Activitypub
  */
 
 namespace Activitypub\Tests\Transformer;
 
-use Activitypub\Transformer\Json;
 use Activitypub\Activity\Base_Object;
+use Activitypub\Transformer\Json;
 use WP_UnitTestCase;
 
 /**

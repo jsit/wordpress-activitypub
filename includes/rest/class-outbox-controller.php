@@ -10,8 +10,9 @@ namespace Activitypub\Rest;
 use Activitypub\Activity\Base_Object;
 use Activitypub\Collection\Actors;
 use Activitypub\Collection\Outbox;
+
 use function Activitypub\get_masked_wp_version;
-use function ActivityPub\get_rest_url_by_path;
+use function Activitypub\get_rest_url_by_path;
 
 /**
  * ActivityPub Outbox Controller.
@@ -35,7 +36,7 @@ class Outbox_Controller extends \WP_REST_Controller {
 	 *
 	 * @var string
 	 */
-	protected $rest_base = '(?:users|actors)/(?P<user_id>[\w\-\.]+)/outbox';
+	protected $rest_base = '(?:users|actors)/(?P<user_id>[-]?\d+)/outbox';
 
 	/**
 	 * Register routes.
@@ -48,7 +49,7 @@ class Outbox_Controller extends \WP_REST_Controller {
 				'args'   => array(
 					'user_id' => array(
 						'description'       => 'The ID of the user or actor.',
-						'type'              => 'string',
+						'type'              => 'integer',
 						'validate_callback' => array( $this, 'validate_user_id' ),
 					),
 				),
@@ -84,7 +85,7 @@ class Outbox_Controller extends \WP_REST_Controller {
 	 * @return bool|\WP_Error True if the user_id is valid, WP_Error otherwise.
 	 */
 	public function validate_user_id( $user_id ) {
-		$user = Actors::get_by_various( $user_id );
+		$user = Actors::get_by_id( $user_id );
 		if ( \is_wp_error( $user ) ) {
 			return $user;
 		}
@@ -100,8 +101,8 @@ class Outbox_Controller extends \WP_REST_Controller {
 	 */
 	public function get_items( $request ) {
 		$page    = $request->get_param( 'page' ) ?? 1;
-		$user    = Actors::get_by_various( $request->get_param( 'user_id' ) );
-		$user_id = $user->get__id();
+		$user_id = $request->get_param( 'user_id' );
+		$user    = Actors::get_by_id( $user_id );
 
 		/**
 		 * Action triggered prior to the ActivityPub profile being created and sent to the client.
@@ -153,6 +154,8 @@ class Outbox_Controller extends \WP_REST_Controller {
 			);
 		}
 
+		$args = \apply_filters_deprecated( 'rest_activitypub_outbox_query', array( $args, $request ), '5.9.0', 'activitypub_rest_outbox_query' );
+
 		/**
 		 * Filters WP_Query arguments when querying Outbox items via the REST API.
 		 *
@@ -161,7 +164,7 @@ class Outbox_Controller extends \WP_REST_Controller {
 		 * @param array            $args    Array of arguments for WP_Query.
 		 * @param \WP_REST_Request $request The REST API request.
 		 */
-		$args = apply_filters( 'rest_activitypub_outbox_query', $args, $request );
+		$args = \apply_filters( 'activitypub_rest_outbox_query', $args, $request );
 
 		$outbox_query = new \WP_Query();
 		$query_result = $outbox_query->query( $args );
@@ -178,6 +181,20 @@ class Outbox_Controller extends \WP_REST_Controller {
 
 		\update_postmeta_cache( \wp_list_pluck( $query_result, 'ID' ) );
 		foreach ( $query_result as $outbox_item ) {
+			if ( ! $outbox_item instanceof \WP_Post ) {
+				/**
+				 * Action triggered when an outbox item is not a WP_Post.
+				 *
+				 * @param mixed            $outbox_item  The outbox item.
+				 * @param array            $args         The arguments used to query the outbox.
+				 * @param array            $query_result The result of the query.
+				 * @param \WP_REST_Request $request      The request object.
+				 */
+				do_action( 'activitypub_rest_outbox_item_error', $outbox_item, $args, $query_result, $request );
+
+				continue;
+			}
+
 			$response['orderedItems'][] = $this->prepare_item_for_response( $outbox_item, $request );
 		}
 
@@ -194,12 +211,14 @@ class Outbox_Controller extends \WP_REST_Controller {
 		 */
 		$response = \apply_filters( 'activitypub_rest_outbox_array', $response, $request );
 
+		\do_action_deprecated( 'activitypub_outbox_post', array( $request ), '5.9.0', 'activitypub_rest_outbox_post' );
+
 		/**
 		 * Action triggered after the ActivityPub profile has been created and sent to the client.
 		 *
 		 * @param \WP_REST_Request $request The request object.
 		 */
-		\do_action( 'activitypub_outbox_post', $request );
+		\do_action( 'activitypub_rest_outbox_post', $request );
 
 		$response = \rest_ensure_response( $response );
 		$response->header( 'Content-Type', 'application/activity+json; charset=' . \get_option( 'blog_charset' ) );

@@ -7,6 +7,14 @@
 
 namespace Activitypub\Tests;
 
+use Activitypub\Activity\Activity;
+use Activitypub\Collection\Outbox;
+
+use function Activitypub\add_to_outbox;
+use function Activitypub\extract_recipients_from_activity;
+use function Activitypub\extract_recipients_from_activity_property;
+use function Activitypub\get_activity_visibility;
+
 /**
  * Test class for Functions.
  */
@@ -34,12 +42,21 @@ class Test_Functions extends ActivityPub_TestCase_Cache_HTTP {
 	}
 
 	/**
+	 * Tear down.
+	 */
+	public function tear_down() {
+		parent::tear_down();
+
+		_delete_all_posts();
+	}
+
+	/**
 	 * Test the get_remote_metadata_by_actor function.
 	 *
-	 * @covers \ActivityPub\get_remote_metadata_by_actor
+	 * @covers \Activitypub\get_remote_metadata_by_actor
 	 */
 	public function test_get_remote_metadata_by_actor() {
-		$metadata = \ActivityPub\get_remote_metadata_by_actor( 'pfefferle@notiz.blog' );
+		$metadata = \Activitypub\get_remote_metadata_by_actor( 'pfefferle@notiz.blog' );
 		$this->assertEquals( 'https://notiz.blog/author/matthias-pfefferle/', $metadata['url'] );
 		$this->assertEquals( 'pfefferle', $metadata['preferredUsername'] );
 		$this->assertEquals( 'Matthias Pfefferle', $metadata['name'] );
@@ -48,7 +65,7 @@ class Test_Functions extends ActivityPub_TestCase_Cache_HTTP {
 	/**
 	 * Test object_id_to_comment.
 	 *
-	 * @covers \ActivityPub\object_id_to_comment
+	 * @covers \Activitypub\object_id_to_comment
 	 */
 	public function test_object_id_to_comment_basic() {
 		$single_comment_source_id = 'https://example.com/single';
@@ -80,7 +97,7 @@ class Test_Functions extends ActivityPub_TestCase_Cache_HTTP {
 	/**
 	 * Test object_id_to_comment with invalid source ID.
 	 *
-	 * @covers \ActivityPub\object_id_to_comment
+	 * @covers \Activitypub\object_id_to_comment
 	 */
 	public function test_object_id_to_comment_none() {
 		$single_comment_source_id = 'https://example.com/none';
@@ -91,7 +108,7 @@ class Test_Functions extends ActivityPub_TestCase_Cache_HTTP {
 	/**
 	 * Test object_id_to_comment with duplicate source ID.
 	 *
-	 * @covers \ActivityPub\object_id_to_comment
+	 * @covers \Activitypub\object_id_to_comment
 	 */
 	public function test_object_id_to_comment_duplicate() {
 		$duplicate_comment_source_id = 'https://example.com/duplicate';
@@ -144,9 +161,9 @@ class Test_Functions extends ActivityPub_TestCase_Cache_HTTP {
 	 * @covers \Activitypub\is_self_ping
 	 */
 	public function test_is_self_ping() {
-		$this->assertFalse( \Activitypub\is_self_ping( 'https://example.org' ) );
+		$this->assertFalse( \Activitypub\is_self_ping( \home_url() ) );
 		$this->assertFalse( \Activitypub\is_self_ping( 'https://example.com' ) );
-		$this->assertTrue( \Activitypub\is_self_ping( 'https://example.org/?c=123' ) );
+		$this->assertTrue( \Activitypub\is_self_ping( \home_url( '?c=123' ) ) );
 		$this->assertFalse( \Activitypub\is_self_ping( 'https://example.com/?c=123' ) );
 	}
 
@@ -268,6 +285,53 @@ class Test_Functions extends ActivityPub_TestCase_Cache_HTTP {
 			array( array(), false ),
 			array( $create, true ),
 			array( $note, false ),
+			array( 'string', false ),
+			array( 123, false ),
+			array( true, false ),
+			array( false, false ),
+			array( null, false ),
+			array( new \stdClass(), false ),
+		);
+	}
+
+	/**
+	 * Test is_activity_object with array input.
+	 *
+	 * @covers \Activitypub\is_activity_object
+	 *
+	 * @dataProvider is_activity_object_data
+	 *
+	 * @param mixed $activity The activity object.
+	 * @param bool  $expected The expected result.
+	 */
+	public function test_is_activity_object( $activity, $expected ) {
+		$this->assertEquals( $expected, \Activitypub\is_activity_object( $activity ) );
+	}
+
+	/**
+	 * Data provider for test_is_activity_object.
+	 *
+	 * @return array[][]
+	 */
+	public function is_activity_object_data() {
+		// Test Activity object.
+		$create = new \Activitypub\Activity\Activity();
+		$create->set_type( 'Create' );
+
+		// Test Base_Object.
+		$note = new \Activitypub\Activity\Base_Object();
+		$note->set_type( 'Note' );
+
+		return array(
+			array( array( 'type' => 'Article' ), true ),
+			array( array( 'type' => 'Image' ), true ),
+			array( array( 'type' => 'Video' ), true ),
+			array( array( 'type' => 'Audio' ), true ),
+			array( array( 'type' => '' ), false ),
+			array( array( 'type' => null ), false ),
+			array( array(), false ),
+			array( $create, false ),
+			array( $note, true ),
 			array( 'string', false ),
 			array( 123, false ),
 			array( true, false ),
@@ -499,5 +563,847 @@ class Test_Functions extends ActivityPub_TestCase_Cache_HTTP {
 				'6',
 			),
 		);
+	}
+
+	/**
+	 * Test generate_post_summary function.
+	 *
+	 * @covers \Activitypub\generate_post_summary
+	 * @dataProvider get_post_summary_data
+	 *
+	 * @param string $desc     The description of the test.
+	 * @param array  $post     The post object.
+	 * @param string $expected The expected summary.
+	 * @param int    $length   The length of the summary.
+	 */
+	public function test_generate_post_summary( $desc, $post, $expected, $length = 500 ) {
+		\add_shortcode(
+			'activitypub_test_shortcode',
+			function () {
+				return 'mighty short code';
+			}
+		);
+
+		$post_id = \wp_insert_post( $post );
+
+		$this->assertEquals(
+			$expected,
+			\Activitypub\generate_post_summary( $post_id, $length ),
+			$desc
+		);
+
+		\wp_delete_post( $post_id, true );
+		\remove_shortcode( 'activitypub_test_shortcode' );
+	}
+
+	/**
+	 * Data provider for test_generate_post_summary.
+	 *
+	 * @return array[]
+	 */
+	public function get_post_summary_data() {
+		return array(
+			array(
+				'Excerpt',
+				array(
+					'post_excerpt' => 'Hello World',
+				),
+				'Hello World',
+			),
+			array(
+				'Greek Excerpt',
+				array(
+					'post_excerpt' => 'Τι μπορεί να σου συμβεί σε μια βόλτα για να αγοράσεις μια βαλίτσα για τα ταξίδια σου; Όλα είναι πιθανά αν έχεις ανοιχτές τις "κεραίες" σου!',
+				),
+				'Τι μπορεί να σου συμβεί σε μια βόλτα για να αγοράσεις μια βαλίτσα για τα ταξίδια σου; Όλα είναι πιθανά αν έχεις ανοιχτές τις "κεραίες" σου!',
+			),
+			array(
+				'Content',
+				array(
+					'post_content' => 'Hello World',
+				),
+				'Hello World',
+			),
+			array(
+				'Content with more tag',
+				array(
+					'post_content' => 'Hello World <!--more--> More',
+				),
+				'Hello World […]',
+			),
+			array(
+				'Excerpt with shortcode',
+				array(
+					'post_excerpt' => 'Hello World [activitypub_test_shortcode]',
+				),
+				'Hello World',
+			),
+			array(
+				'Content with shortcode',
+				array(
+					'post_content' => 'Hello World [activitypub_test_shortcode]',
+				),
+				'Hello World',
+			),
+			array(
+				'Excerpt more than limit',
+				array(
+					'post_excerpt' => 'Hello World Hello World Hello World Hello World Hello World',
+				),
+				'Hello World Hello World Hello World Hello World Hello World',
+				10,
+			),
+			array(
+				'Content more than limit',
+				array(
+					'post_content' => 'Hello World Hello World Hello World Hello World Hello World',
+				),
+				'Hello […]',
+				10,
+			),
+			array(
+				'Content more than limit with more tag',
+				array(
+					'post_content' => 'Hello World Hello <!--more--> World Hello World Hello World Hello World',
+				),
+				'Hello World Hello […]',
+				1,
+			),
+			array(
+				'Test HTML content',
+				array(
+					'post_content' => '<p>Hello World</p>',
+				),
+				'Hello World',
+			),
+			array(
+				'Test HTML content with anchor',
+				array(
+					'post_content' => 'Hello <a href="https://example.com">World</a>',
+				),
+				'Hello World',
+			),
+			array(
+				'Test HTML excerpt',
+				array(
+					'post_excerpt' => '<p>Hello World</p>',
+				),
+				'Hello World',
+			),
+			array(
+				'Test HTML excerpt with anchor',
+				array(
+					'post_excerpt' => 'Hello <a href="https://example.com">World</a>',
+				),
+				'Hello World',
+			),
+		);
+	}
+
+	/**
+	 * Test get_user_id function.
+	 *
+	 * @covers \Activitypub\get_user_id
+	 */
+	public function test_get_user_id() {
+		$this->assertFalse( \Activitypub\get_user_id( 90210 ) );
+
+		$user = self::factory()->user->create_and_get();
+		$user->add_cap( 'activitypub' );
+
+		$this->assertIsString( \Activitypub\get_user_id( $user->ID ) );
+
+		\add_option( 'activitypub_actor_mode', ACTIVITYPUB_ACTOR_MODE );
+
+		$this->assertIsString( \Activitypub\get_user_id( $user->ID ) );
+
+		$user->remove_cap( 'activitypub' );
+		\update_option( 'activitypub_actor_mode', ACTIVITYPUB_BLOG_MODE );
+		$this->assertIsString( \Activitypub\get_user_id( $user->ID ) );
+
+		\update_option( 'activitypub_actor_mode', ACTIVITYPUB_ACTOR_MODE );
+		$this->assertFalse( \Activitypub\get_user_id( $user->ID ) );
+	}
+
+	/**
+	 * Tests follow method.
+	 *
+	 * @covers \Activitypub\follow
+	 */
+	public function test_follow() {
+		$user_id = self::factory()->user->create(
+			array(
+				'role' => 'administrator',
+			)
+		);
+
+		$actor_array = array(
+			'id'                 => 'https://example.com/users/test',
+			'type'               => 'Person',
+			'name'               => 'Test Follower',
+			'preferred_username' => 'Follower',
+			'summary'            => '<p>HTML content</p>',
+			'endpoints'          => array(
+				'sharedInbox' => 'https://example.com/inbox',
+			),
+		);
+
+		$remote_actor = function () use ( $actor_array ) {
+			return $actor_array;
+		};
+
+		\add_filter( 'activitypub_pre_http_get_remote_object', $remote_actor );
+
+		\Activitypub\follow( 'https://example.com/users/test', $user_id );
+
+		$outbox_items = \get_posts(
+			array(
+				'post_type'   => \Activitypub\Collection\Outbox::POST_TYPE,
+				'post_status' => 'any',
+				'author'      => $user_id,
+			)
+		);
+
+		$this->assertEquals( 1, count( $outbox_items ) );
+		$this->assertEquals( 'Follow', \get_post_meta( $outbox_items[0]->ID, '_activitypub_activity_type', true ) );
+
+		\remove_filter( 'activitypub_pre_http_get_remote_object', $remote_actor );
+	}
+
+	/**
+	 * Test that Update activities have the updated attribute set.
+	 *
+	 * @covers \Activitypub\add_to_outbox
+	 */
+	public function test_webfinger_support() {
+		$follow = new Activity();
+		$follow->set_type( 'Follow' );
+		$follow->set_actor( 'https://example.com/user/1' );
+		$follow->set_object( 'user1@example.com' );
+		$follow->set_to( array( 'https://example.com/user/2' ) );
+
+		$filter = function () {
+			return array(
+				'response' => array(
+					'code' => 200,
+				),
+				'body'     => wp_json_encode(
+					array(
+						'subject' => 'acct:pfefferle@example.org',
+						'aliases' => array( 'https://example.org/?author=1' ),
+						'links'   => array(
+							array(
+								'rel'  => 'self',
+								'href' => 'https://example.org/?author=1',
+								'type' => 'application/activity+json',
+							),
+						),
+					)
+				),
+			);
+		};
+		\add_filter( 'pre_http_request', $filter );
+
+		$id = add_to_outbox( $follow, null, 1 );
+
+		$this->assertNotFalse( $id );
+
+		\remove_filter( 'pre_http_request', $filter );
+
+		// Get the activity from the outbox.
+		$activity = Outbox::get_activity( $id );
+		$this->assertNotInstanceOf( \WP_Error::class, $activity );
+
+		$this->assertEquals( 'Follow', $activity->get_type() );
+		$this->assertEquals( 'https://example.org/?author=1', get_post_meta( $id, '_activitypub_object_id', true ) );
+
+		// Delete the Outbox item.
+		wp_delete_post( $id );
+	}
+
+	/**
+	 * Test normalize_url.
+	 *
+	 * @dataProvider data_normalize_url
+	 *
+	 * @covers \Activitypub\normalize_url
+	 *
+	 * @param string $url     The URL.
+	 * @param string $expected The expected result.
+	 */
+	public function test_normalize_url( $url, $expected ) {
+		$this->assertEquals( $expected, \Activitypub\normalize_url( $url ) );
+	}
+
+	/**
+	 * Data provider for test_normalize_url.
+	 *
+	 * @return array[]
+	 */
+	public function data_normalize_url() {
+		return array(
+			array( 'https://example.com', 'example.com' ),
+			array( 'http://example.com', 'example.com' ),
+			array( 'https://example.com/path', 'example.com/path' ),
+			array( 'http://example.com/path', 'example.com/path' ),
+			array( 'http://example.com/path/', 'example.com/path' ),
+			array( 'https://www.example.com/path/to/nowhere', 'example.com/path/to/nowhere' ),
+			array( 'http://www.example.com/path/to/nowhere', 'example.com/path/to/nowhere' ),
+		);
+	}
+
+	/**
+	 * Test normalize_host.
+	 *
+	 * @dataProvider data_normalize_host
+	 *
+	 * @covers \Activitypub\normalize_host
+	 *
+	 * @param string $host     The host.
+	 * @param string $expected The expected result.
+	 */
+	public function test_normalize_host( $host, $expected ) {
+		$this->assertEquals( $expected, \Activitypub\normalize_host( $host ) );
+	}
+
+	/**
+	 * Data provider for test_normalize_host.
+	 *
+	 * @return array[]
+	 */
+	public function data_normalize_host() {
+		return array(
+			array( 'example.com', 'example.com' ),
+			array( 'www.example.com', 'example.com' ),
+		);
+	}
+
+	/**
+	 * Test whether an activity is public.
+	 *
+	 * @dataProvider public_activity_provider
+	 *
+	 * @param array $data  The data.
+	 * @param bool  $check The check.
+	 */
+	public function test_is_activity_public( $data, $check ) {
+		$this->assertEquals( $check, \Activitypub\is_activity_public( $data ) );
+	}
+
+	/**
+	 * Data provider.
+	 *
+	 * @return array[]
+	 */
+	public function public_activity_provider() {
+		return array(
+			array(
+				array(
+					'cc'     => array(
+						'https://example.org/@test',
+						'https://example.com/@test2',
+					),
+					'to'     => 'https://www.w3.org/ns/activitystreams#Public',
+					'object' => array(),
+				),
+				true,
+			),
+			array(
+				array(
+					'cc'     => array(
+						'https://example.org/@test',
+						'https://example.com/@test2',
+					),
+					'to'     => array(
+						'https://www.w3.org/ns/activitystreams#Public',
+					),
+					'object' => array(),
+				),
+				true,
+			),
+			array(
+				array(
+					'cc'     => array(
+						'https://example.org/@test',
+						'https://example.com/@test2',
+					),
+					'object' => array(),
+				),
+				false,
+			),
+			array(
+				array(
+					'cc'     => array(
+						'https://example.org/@test',
+						'https://example.com/@test2',
+					),
+					'object' => array(
+						'to' => 'https://www.w3.org/ns/activitystreams#Public',
+					),
+				),
+				true,
+			),
+			array(
+				array(
+					'cc'     => array(
+						'https://example.org/@test',
+						'https://example.com/@test2',
+					),
+					'object' => array(
+						'to' => array(
+							'https://www.w3.org/ns/activitystreams#Public',
+						),
+					),
+				),
+				true,
+			),
+			array(
+				array(
+					'cc'     => array(
+						'https://example.org/@test',
+						'https://example.com/@test2',
+					),
+					'object' => array(
+						'cc' => array(
+							'https://www.w3.org/ns/activitystreams#Public',
+						),
+					),
+				),
+				false,
+			),
+			array(
+				array(
+					'cc'     => array(
+						'https://example.org/@test',
+						'https://www.w3.org/ns/activitystreams#Public',
+					),
+					'object' => 'https://example.com',
+				),
+				true,
+			),
+			array(
+				array(
+					'object' => array(
+						'to' => 'https://www.w3.org/ns/activitystreams#Public',
+					),
+				),
+				true,
+			),
+			array(
+				array(
+					'object' => array(
+						'cc' => 'https://www.w3.org/ns/activitystreams#Public',
+					),
+				),
+				true,
+			),
+			array(
+				array(
+					'object' => array(
+						'monkey' => 'https://www.w3.org/ns/activitystreams#Public',
+					),
+				),
+				false,
+			),
+			array(
+				array(
+					'to'     => 'http://www.w3.org/ns/activitystreams#Public',
+					'cc'     => 'http://www.w3.org/ns/activitystreams#Public',
+					'object' => '',
+				),
+				false,
+			),
+			array(
+				array(
+					'to'     => array( 'http://www.w3.org/ns/activitystreams#Public' ),
+					'cc'     => array( 'http://www.w3.org/ns/activitystreams#Public' ),
+					'object' => '',
+				),
+				false,
+			),
+			array(
+				array(
+					'to'     => 'as:Public',
+					'cc'     => '',
+					'object' => '',
+				),
+				true,
+			),
+			array(
+				array(
+					'to'     => '',
+					'cc'     => 'as:Public',
+					'object' => '',
+				),
+				true,
+			),
+			array(
+				array(
+					'to'     => '',
+					'cc'     => 'Public',
+					'object' => '',
+				),
+				true,
+			),
+		);
+	}
+
+	/**
+	 * Data provider for testing extract_recipients_from_activity_property.
+	 *
+	 * @return array Test data sets.
+	 */
+	public function data_provider_extract_recipients() {
+		return array(
+			'simple_string_recipient'            => array(
+				'data'      => array(
+					'to' => 'https://example.com/users/alice',
+				),
+				'attribute' => 'to',
+				'expected'  => array( 'https://example.com/users/alice' ),
+			),
+			'array_of_recipients'                => array(
+				'data'      => array(
+					'to' => array(
+						'https://example.com/users/alice',
+						'https://example.com/users/bob',
+					),
+				),
+				'attribute' => 'to',
+				'expected'  => array(
+					'https://example.com/users/alice',
+					'https://example.com/users/bob',
+				),
+			),
+			'object_recipients_with_id'          => array(
+				'data'      => array(
+					'cc' => array(
+						array( 'id' => 'https://example.com/users/charlie' ),
+						array( 'id' => 'https://example.com/users/diana' ),
+					),
+				),
+				'attribute' => 'cc',
+				'expected'  => array(
+					'https://example.com/users/charlie',
+					'https://example.com/users/diana',
+				),
+			),
+			'mixed_recipients'                   => array(
+				'data'      => array(
+					'bcc' => array(
+						'https://example.com/users/eve',
+						array( 'id' => 'https://example.com/users/frank' ),
+					),
+				),
+				'attribute' => 'bcc',
+				'expected'  => array(
+					'https://example.com/users/eve',
+					'https://example.com/users/frank',
+				),
+			),
+			'recipients_in_object'               => array(
+				'data'      => array(
+					'object' => array(
+						'to' => 'https://example.com/users/grace',
+					),
+				),
+				'attribute' => 'to',
+				'expected'  => array( 'https://example.com/users/grace' ),
+			),
+			'recipients_in_both_main_and_object' => array(
+				'data'      => array(
+					'to'     => 'https://example.com/users/henry',
+					'object' => array(
+						'to' => 'https://example.com/users/iris',
+					),
+				),
+				'attribute' => 'to',
+				'expected'  => array(
+					'https://example.com/users/henry',
+				),
+			),
+			'duplicate_recipients'               => array(
+				'data'      => array(
+					'to' => array(
+						'https://example.com/users/jack',
+						'https://example.com/users/jack', // Duplicate.
+					),
+				),
+				'attribute' => 'to',
+				'expected'  => array( 'https://example.com/users/jack' ), // Should be unique.
+			),
+			'no_recipients'                      => array(
+				'data'      => array(
+					'cc' => array(),
+				),
+				'attribute' => 'to', // Different attribute.
+				'expected'  => array(),
+			),
+			'empty_data'                         => array(
+				'data'      => array(),
+				'attribute' => 'to',
+				'expected'  => array(),
+			),
+			'object_with_id'                     => array(
+				'data'      => array(
+					'to' => array(
+						array(
+							'id'   => 'https://example.com/users/kate',
+							'type' => 'Person',
+							'name' => 'Kate',
+						),
+					),
+				),
+				'attribute' => 'to',
+				'expected'  => array(
+					'https://example.com/users/kate',
+				), // Should be ignored.
+			),
+			'public_recipients'                  => array(
+				'data'      => array(
+					'to' => array(
+						'https://www.w3.org/ns/activitystreams#Public',
+						'https://example.com/users/liam',
+					),
+				),
+				'attribute' => 'to',
+				'expected'  => array(
+					'https://www.w3.org/ns/activitystreams#Public',
+					'https://example.com/users/liam',
+				),
+			),
+			'audience_attribute'                 => array(
+				'data'      => array(
+					'audience' => 'https://example.com/groups/followers',
+				),
+				'attribute' => 'audience',
+				'expected'  => array( 'https://example.com/groups/followers' ),
+			),
+		);
+	}
+
+	/**
+	 * Test extract_recipients_from_activity_property function.
+	 *
+	 * @dataProvider data_provider_extract_recipients
+	 *
+	 * @param array  $data      The activity data.
+	 * @param string $attribute The attribute to extract.
+	 * @param array  $expected  The expected recipients.
+	 */
+	public function test_extract_recipients_from_activity_property( $data, $attribute, $expected ) {
+		$actual = extract_recipients_from_activity_property( $attribute, $data );
+
+		// Sort both arrays to ensure order doesn't matter in comparison.
+		sort( $expected );
+		sort( $actual );
+
+		$this->assertSame( $expected, $actual );
+	}
+
+	/**
+	 * Test extract_recipients_from_activity_attribute function.
+	 *
+	 * @dataProvider data_provider_extract_recipients
+	 *
+	 * @param array  $data      The activity data.
+	 * @param string $attribute The attribute to extract.
+	 * @param array  $expected  The expected recipients.
+	 */
+	public function test_extract_recipients_from_activity( $data, $attribute, $expected ) {
+		$actual = extract_recipients_from_activity( $data );
+
+		// Sort both arrays to ensure order doesn't matter in comparison.
+		sort( $expected );
+		sort( $actual );
+
+		$this->assertSame( $expected, $actual );
+	}
+
+	/**
+	 * Test that the function returns unique recipients.
+	 */
+	public function test_unique_recipients() {
+		$data   = array(
+			'to'     => array(
+				'https://example.com/users/alice',
+				'https://example.com/users/alice', // Duplicate.
+			),
+			'object' => array(
+				'to' => 'https://example.com/users/alice', // Another duplicate.
+			),
+		);
+		$actual = extract_recipients_from_activity_property( 'to', $data );
+
+		$this->assertSame( array( 'https://example.com/users/alice' ), $actual );
+		$this->assertCount( 1, $actual, 'Should return unique recipients only.' );
+	}
+
+	/**
+	 * Test that the function returns unique recipients from extract_recipients_from_activity.
+	 */
+	public function test_unique_recipients_from_activity() {
+		$data   = array(
+			'to'     => array(
+				'https://example.com/users/alice',
+				'https://example.com/users/alice', // Duplicate.
+			),
+			'object' => array(
+				'to' => 'https://example.com/users/alice', // Another duplicate.
+			),
+		);
+		$actual = extract_recipients_from_activity( $data );
+		$this->assertSame( array( 'https://example.com/users/alice' ), $actual );
+		$this->assertCount( 1, $actual, 'Should return unique recipients only.' );
+	}
+
+	/**
+	 * Data provider for visibility determination tests.
+	 *
+	 * @return array
+	 */
+	public function visibility_data_provider() {
+		return array(
+			// Public visibility - 'to' contains public identifier.
+			array(
+				'activity'    => array(
+					'type' => 'Create',
+					'to'   => array( 'https://www.w3.org/ns/activitystreams#Public' ),
+					'cc'   => array(),
+				),
+				'expected'    => ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC,
+				'description' => 'Public visibility via to field',
+			),
+			// Quiet public visibility - 'cc' contains public identifier.
+			array(
+				'activity'    => array(
+					'type' => 'Create',
+					'to'   => array( 'https://example.com/user/123' ),
+					'cc'   => array( 'https://www.w3.org/ns/activitystreams#Public' ),
+				),
+				'expected'    => ACTIVITYPUB_CONTENT_VISIBILITY_QUIET_PUBLIC,
+				'description' => 'Quiet public visibility via cc field',
+			),
+			// Private visibility - no public identifiers.
+			array(
+				'activity'    => array(
+					'type' => 'Create',
+					'to'   => array( 'https://example.com/user/123' ),
+					'cc'   => array( 'https://example.com/user/456' ),
+				),
+				'expected'    => ACTIVITYPUB_CONTENT_VISIBILITY_PRIVATE,
+				'description' => 'Private visibility',
+			),
+			// Special activity types always private - Accept.
+			array(
+				'activity'    => array(
+					'type' => 'Accept',
+					'to'   => array( 'https://www.w3.org/ns/activitystreams#Public' ),
+					'cc'   => array(),
+				),
+				'expected'    => ACTIVITYPUB_CONTENT_VISIBILITY_PRIVATE,
+				'description' => 'Accept activity always private',
+			),
+			// Special activity types always private - Delete.
+			array(
+				'activity'    => array(
+					'type' => 'Delete',
+					'to'   => array( 'https://www.w3.org/ns/activitystreams#Public' ),
+					'cc'   => array(),
+				),
+				'expected'    => ACTIVITYPUB_CONTENT_VISIBILITY_PRIVATE,
+				'description' => 'Delete activity always private',
+			),
+			// Special activity types always private - Follow.
+			array(
+				'activity'    => array(
+					'type' => 'Follow',
+					'to'   => array( 'https://www.w3.org/ns/activitystreams#Public' ),
+					'cc'   => array(),
+				),
+				'expected'    => ACTIVITYPUB_CONTENT_VISIBILITY_PRIVATE,
+				'description' => 'Follow activity always private',
+			),
+			// Alternative public identifier - as:Public.
+			array(
+				'activity'    => array(
+					'type' => 'Create',
+					'to'   => array( 'as:Public' ),
+					'cc'   => array(),
+				),
+				'expected'    => ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC,
+				'description' => 'Public visibility via as:Public identifier',
+			),
+			// Empty activity.
+			array(
+				'activity'    => array(
+					'type' => 'Create',
+				),
+				'expected'    => ACTIVITYPUB_CONTENT_VISIBILITY_PRIVATE,
+				'description' => 'Empty activity defaults to private',
+			),
+		);
+	}
+
+	/**
+	 * Test get_activity_visibility function.
+	 *
+	 * @dataProvider visibility_data_provider
+	 *
+	 * @param array  $activity    The activity data.
+	 * @param string $expected    Expected visibility level.
+	 * @param string $description Test description.
+	 */
+	public function test_get_activity_visibility( $activity, $expected, $description ) {
+		$result = \Activitypub\get_activity_visibility( $activity );
+		$this->assertSame( $expected, $result, $description );
+	}
+
+	/**
+	 * Test get_activity_visibility with minimal activity data.
+	 */
+	public function test_get_activity_visibility_with_minimal_activity() {
+		$activity = array(
+			'type' => 'Create',
+			'to'   => array( 'https://www.w3.org/ns/activitystreams#Public' ),
+			'cc'   => array(),
+		);
+
+		$result = \Activitypub\get_activity_visibility( $activity );
+		$this->assertSame( ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC, $result, 'Should work with minimal activity data' );
+	}
+
+	/**
+	 * Data provider for camel to snake case and snake to camel case tests.
+	 *
+	 * @return array
+	 */
+	public function camel_snake_case_provider() {
+		return array(
+			'SimpleCamelCase'    => array( 'SimpleCamelCase', 'simple_camel_case' ),
+			'camelCase'          => array( 'camelCase', 'camel_case' ),
+			'XMLHttpRequest'     => array( 'XMLHttpRequest', 'x_m_l_http_request' ),
+			'already_snake_case' => array( 'already_snake_case', 'already_snake_case' ),
+			'with_numbers123'    => array( 'withNumbers123', 'with_numbers123' ),
+			'leadingUpperCase'   => array( 'LeadingUpperCase', 'leading_upper_case' ),
+			'singleletter'       => array( 'a', 'a' ),
+			'emptyString'        => array( '', '' ),
+			'nonStringInput'     => array( 12345, '12345' ),
+			'CreateActivity'     => array( 'CreateActivity', 'create_activity' ),
+			'Follow'             => array( 'Follow', 'follow' ),
+			'QuoteRequest'       => array( 'QuoteRequest', 'quote_request' ),
+		);
+	}
+
+	/**
+	 * Test camel_to_snake_case function.
+	 *
+	 * @dataProvider camel_snake_case_provider
+	 *
+	 * @param string $original The original string.
+	 * @param string $expected The expected result.
+	 */
+	public function test_camel_to_snake_case( $original, $expected ) {
+		$this->assertSame( $expected, \Activitypub\camel_to_snake_case( $original ) );
 	}
 }

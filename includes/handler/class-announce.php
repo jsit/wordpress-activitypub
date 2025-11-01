@@ -7,12 +7,13 @@
 
 namespace Activitypub\Handler;
 
-use Activitypub\Http;
-use Activitypub\Comment;
 use Activitypub\Collection\Interactions;
+use Activitypub\Comment;
+use Activitypub\Http;
 
-use function Activitypub\object_to_uri;
+use function Activitypub\is_activity;
 use function Activitypub\is_activity_public;
+use function Activitypub\object_to_uri;
 
 /**
  * Handle Create requests.
@@ -22,12 +23,7 @@ class Announce {
 	 * Initialize the class, registering WordPress hooks.
 	 */
 	public static function init() {
-		\add_action(
-			'activitypub_inbox_announce',
-			array( self::class, 'handle_announce' ),
-			10,
-			3
-		);
+		\add_action( 'activitypub_inbox_announce', array( self::class, 'handle_announce' ), 10, 3 );
 	}
 
 	/**
@@ -61,7 +57,7 @@ class Announce {
 			return;
 		}
 
-		if ( ! isset( $object['type'] ) ) {
+		if ( ! is_activity( $object ) ) {
 			return;
 		}
 
@@ -94,7 +90,7 @@ class Announce {
 	 * @param int   $user_id  The id of the local blog-user.
 	 */
 	public static function maybe_save_announce( $activity, $user_id ) {
-		$url = object_to_uri( $activity['object'] );
+		$url = object_to_uri( $activity );
 
 		if ( empty( $url ) ) {
 			return;
@@ -105,21 +101,22 @@ class Announce {
 			return;
 		}
 
-		$state    = Interactions::add_reaction( $activity );
-		$reaction = null;
+		$success = false;
+		$result  = Interactions::add_reaction( $activity );
 
-		if ( $state && ! is_wp_error( $state ) ) {
-			$reaction = get_comment( $state );
+		if ( $result && ! is_wp_error( $result ) ) {
+			$success = true;
+			$result  = get_comment( $result );
 		}
 
 		/**
-		 * Fires after an Announce has been saved.
+		 * Fires after an ActivityPub Announce activity has been handled.
 		 *
-		 * @param array $activity The activity-object.
-		 * @param int   $user_id  The id of the local blog-user.
-		 * @param mixed $state    The state of the reaction.
-		 * @param mixed $reaction The reaction.
+		 * @param array                            $activity The ActivityPub activity data.
+		 * @param int                              $user_id  The local user ID.
+		 * @param bool                             $success  True on success, false otherwise.
+		 * @param array|string|int|\WP_Error|false $result   The WP_Comment object of the created announce/repost comment, or null if creation failed.
 		 */
-		do_action( 'activitypub_handled_announce', $activity, $user_id, $state, $reaction );
+		\do_action( 'activitypub_handled_announce', $activity, $user_id, $success, $result );
 	}
 }

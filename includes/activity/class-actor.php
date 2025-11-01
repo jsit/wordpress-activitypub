@@ -27,6 +27,7 @@ class Actor extends Base_Object {
 			'schema'                    => 'http://schema.org#',
 			'toot'                      => 'http://joinmastodon.org/ns#',
 			'lemmy'                     => 'https://join-lemmy.org/ns#',
+			'litepub'                   => 'http://litepub.social/ns#',
 			'manuallyApprovesFollowers' => 'as:manuallyApprovesFollowers',
 			'PropertyValue'             => 'schema:PropertyValue',
 			'value'                     => 'schema:value',
@@ -55,9 +56,15 @@ class Actor extends Base_Object {
 				'@id'   => 'toot:attributionDomains',
 				'@type' => '@id',
 			),
+			'implements'                => array(
+				'@id'        => 'https://w3id.org/fep/844e/implements',
+				'@type'      => '@id',
+				'@container' => '@list',
+			),
 			'postingRestrictedToMods'   => 'lemmy:postingRestrictedToMods',
 			'discoverable'              => 'toot:discoverable',
 			'indexable'                 => 'toot:indexable',
+			'invisible'                 => 'litepub:invisible',
 		),
 	);
 
@@ -166,14 +173,13 @@ class Actor extends Base_Object {
 	protected $endpoints;
 
 	/**
-	 * It's not part of the ActivityPub protocol but it's a quite common
+	 * It's not part of the ActivityPub protocol, but it's a quite common
 	 * practice to handle an actor public key with a publicKey array:
 	 * [
-	 *     'id' => 'https://my-example.com/actor#main-key'
-	 *     'owner' => 'https://my-example.com/actor',
+	 *     'id'           => 'https://my-example.com/actor#main-key'
+	 *     'owner'        => 'https://my-example.com/actor',
 	 *     'publicKeyPem' => '-----BEGIN PUBLIC KEY-----
-	 *                       MIIBI [...]
-	 *                       DQIDAQAB
+	 *                       [...]
 	 *                       -----END PUBLIC KEY-----'
 	 * ]
 	 *
@@ -184,8 +190,8 @@ class Actor extends Base_Object {
 	protected $public_key;
 
 	/**
-	 * It's not part of the ActivityPub protocol but it's a quite common
-	 * practice to lock an account. If anabled, new followers will not be
+	 * It's not part of the ActivityPub protocol, but it's a quite common
+	 * practice to lock an account. If enabled, new followers will not be
 	 * automatically accepted, but will instead require you to manually
 	 * approve them.
 	 *
@@ -195,7 +201,7 @@ class Actor extends Base_Object {
 	 *
 	 * @context as:manuallyApprovesFollowers
 	 *
-	 * @var boolean
+	 * @var boolean|null
 	 */
 	protected $manually_approves_followers = false;
 
@@ -205,7 +211,7 @@ class Actor extends Base_Object {
 	 *
 	 * @see https://blog.joinmastodon.org/2024/07/highlighting-journalism-on-mastodon/
 	 *
-	 * @var array
+	 * @var array|null
 	 */
 	protected $attribution_domains = null;
 
@@ -219,7 +225,102 @@ class Actor extends Base_Object {
 	/**
 	 * The alsoKnownAs of the actor.
 	 *
-	 * @var array
+	 * @var array|null
 	 */
 	protected $also_known_as;
+
+	/**
+	 * The Featured-Posts.
+	 *
+	 * @see https://docs.joinmastodon.org/spec/activitypub/#featured
+	 *
+	 * @context {
+	 *   "@id": "http://joinmastodon.org/ns#featured",
+	 *   "@type": "@id"
+	 * }
+	 *
+	 * @var string|null
+	 */
+	protected $featured;
+
+	/**
+	 * The Featured-Tags.
+	 *
+	 * @see https://docs.joinmastodon.org/spec/activitypub/#featuredTags
+	 *
+	 * @context {
+	 *   "@id": "http://joinmastodon.org/ns#featuredTags",
+	 *   "@type": "@id"
+	 * }
+	 *
+	 * @var string|null
+	 */
+	protected $featured_tags;
+
+	/**
+	 * Whether the User is discoverable.
+	 *
+	 * @see https://docs.joinmastodon.org/spec/activitypub/#discoverable
+	 *
+	 * @context http://joinmastodon.org/ns#discoverable
+	 *
+	 * @var boolean|null
+	 */
+	protected $discoverable;
+
+	/**
+	 * Whether the User is indexable.
+	 *
+	 * @see https://docs.joinmastodon.org/spec/activitypub/#indexable
+	 *
+	 * @context http://joinmastodon.org/ns#indexable
+	 *
+	 * @var boolean|null
+	 */
+	protected $indexable;
+
+	/**
+	 * The WebFinger Resource.
+	 *
+	 * @see https://codeberg.org/fediverse/fep/src/branch/main/fep/2c59/fep-2c59.md
+	 *
+	 * @var string|null
+	 */
+	protected $webfinger;
+
+	/**
+	 * URL to the Moderators endpoint.
+	 *
+	 * @see https://join-lemmy.org/docs/contributors/05-federation.html
+	 *
+	 * @var string|null
+	 */
+	protected $moderators;
+
+	/**
+	 * Restrict posting to mods.
+	 *
+	 * @see https://join-lemmy.org/docs/contributors/05-federation.html
+	 *
+	 * @var boolean|null
+	 */
+	protected $posting_restricted_to_mods;
+
+	/**
+	 * Listing Implemented Specifications on the Application Actor
+	 *
+	 * @see https://codeberg.org/fediverse/fep/src/branch/main/fep/844e/fep-844e.md
+	 *
+	 * @var array|null
+	 */
+	protected $implements;
+
+	/**
+	 * Whether the User is invisible.
+	 *
+	 * @see https://litepub.social/
+	 *
+	 * @var boolean|null
+	 */
+	protected $invisible = null;
 }

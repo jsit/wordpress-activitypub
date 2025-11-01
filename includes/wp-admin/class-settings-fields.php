@@ -7,6 +7,10 @@
 
 namespace Activitypub\WP_Admin;
 
+use Activitypub\Moderation;
+
+use function Activitypub\home_host;
+
 /**
  * Class Settings_Fields.
  */
@@ -38,13 +42,6 @@ class Settings_Fields {
 		);
 
 		add_settings_section(
-			'activitypub_notifications',
-			__( 'Notifications', 'activitypub' ),
-			array( self::class, 'render_notifications_section' ),
-			'activitypub_settings'
-		);
-
-		add_settings_section(
 			'activitypub_general',
 			__( 'General', 'activitypub' ),
 			'__return_empty_string',
@@ -58,6 +55,13 @@ class Settings_Fields {
 			'activitypub_settings'
 		);
 
+		add_settings_section(
+			'activitypub_moderation',
+			\esc_html__( 'Moderation', 'activitypub' ),
+			array( self::class, 'render_moderation_section_description' ),
+			'activitypub_settings'
+		);
+
 		// Add settings fields.
 		add_settings_field(
 			'activitypub_actor_mode',
@@ -65,14 +69,6 @@ class Settings_Fields {
 			array( self::class, 'render_actor_mode_field' ),
 			'activitypub_settings',
 			'activitypub_profiles'
-		);
-
-		add_settings_field(
-			'activitypub_object_type',
-			__( 'Activity-Object-Type', 'activitypub' ),
-			array( self::class, 'render_object_type_field' ),
-			'activitypub_settings',
-			'activitypub_activities'
 		);
 
 		$object_type = \get_option( 'activitypub_object_type', ACTIVITYPUB_DEFAULT_OBJECT_TYPE );
@@ -140,14 +136,6 @@ class Settings_Fields {
 		);
 
 		add_settings_field(
-			'activitypub_blocklist',
-			__( 'Blocklist', 'activitypub' ),
-			array( self::class, 'render_blocklist_field' ),
-			'activitypub_settings',
-			'activitypub_server'
-		);
-
-		add_settings_field(
 			'activitypub_relays',
 			__( 'Relays', 'activitypub' ),
 			array( self::class, 'render_relays_field' ),
@@ -155,49 +143,22 @@ class Settings_Fields {
 			'activitypub_server',
 			array( 'label_for' => 'activitypub_relays' )
 		);
-	}
 
-	/**
-	 * Render notifications section.
-	 */
-	public static function render_notifications_section() {
-		?>
-		<p>
-			<?php \esc_html_e( 'Choose which notifications you want to receive. The plugin currently only supports e-mail notifications, but we will add more options in the future.', 'activitypub' ); ?>
-		</p>
-		<table class="form-table">
-			<tbody>
-			<tr>
-				<th scope="col">
-					<?php \esc_html_e( 'Type', 'activitypub' ); ?>
-				</th>
-				<th scope="col">
-					<?php \esc_html_e( 'E-Mail', 'activitypub' ); ?>
-				</th>
-			</tr>
-			<tr>
-				<td>
-					<?php \esc_html_e( 'New followers', 'activitypub' ); ?>
-				</td>
-				<td>
-					<label>
-						<input type="checkbox" name="activitypub_mailer_new_follower" id="activitypub_mailer_new_follower" value="1" <?php \checked( '1', \get_option( 'activitypub_mailer_new_follower', '0' ) ); ?> />
-					</label>
-				</td>
-			</tr>
-			<tr>
-				<td>
-					<?php \esc_html_e( 'Direct Messages', 'activitypub' ); ?>
-				</td>
-				<td>
-					<label>
-						<input type="checkbox" name="activitypub_mailer_new_dm" id="activitypub_mailer_new_dm" value="1" <?php \checked( '1', \get_option( 'activitypub_mailer_new_dm', '0' ) ); ?> />
-					</label>
-				</td>
-			</tr>
-			</tbody>
-		</table>
-		<?php
+		add_settings_field(
+			'activitypub_site_blocked_domains',
+			\esc_html__( 'Blocked Domains', 'activitypub' ),
+			array( self::class, 'render_site_blocked_domains_field' ),
+			'activitypub_settings',
+			'activitypub_moderation'
+		);
+
+		add_settings_field(
+			'activitypub_site_blocked_keywords',
+			\esc_html__( 'Blocked Keywords', 'activitypub' ),
+			array( self::class, 'render_site_blocked_keywords_field' ),
+			'activitypub_settings',
+			'activitypub_moderation'
+		);
 	}
 
 	/**
@@ -265,35 +226,6 @@ class Settings_Fields {
 	}
 
 	/**
-	 * Render object type field.
-	 */
-	public static function render_object_type_field() {
-		$value = get_option( 'activitypub_object_type', ACTIVITYPUB_DEFAULT_OBJECT_TYPE );
-		?>
-		<p>
-			<label>
-				<input type="radio" name="activitypub_object_type" value="wordpress-post-format" <?php checked( 'wordpress-post-format', $value ); ?> />
-				<?php esc_html_e( 'Automatic (default)', 'activitypub' ); ?>
-				-
-				<span class="description">
-					<?php esc_html_e( 'Let the plugin choose the best possible format for you.', 'activitypub' ); ?>
-				</span>
-			</label>
-		</p>
-		<p>
-			<label>
-				<input type="radio" name="activitypub_object_type" value="note" <?php checked( 'note', $value ); ?> />
-				<?php esc_html_e( 'Note', 'activitypub' ); ?>
-				-
-				<span class="description">
-					<?php esc_html_e( 'Should work with most platforms.', 'activitypub' ); ?>
-				</span>
-			</label>
-		</p>
-		<?php
-	}
-
-	/**
 	 * Render custom post content field.
 	 */
 	public static function render_custom_post_content_field() {
@@ -326,7 +258,7 @@ class Settings_Fields {
 	public static function render_max_image_attachments_field() {
 		$value = get_option( 'activitypub_max_image_attachments', ACTIVITYPUB_MAX_IMAGE_ATTACHMENTS );
 		?>
-		<input id="activitypub_max_image_attachments" value="<?php echo esc_attr( $value ); ?>" name="activitypub_max_image_attachments" type="number" min="0" class="small-text" />
+		<input id="activitypub_max_image_attachments" value="<?php echo esc_attr( $value ); ?>" name="activitypub_max_image_attachments" type="number" min="0" max="10" class="small-text" />
 		<p class="description">
 			<?php
 			echo wp_kses(
@@ -382,6 +314,7 @@ class Settings_Fields {
 
 		$allow_likes   = get_option( 'activitypub_allow_likes', '1' );
 		$allow_reposts = get_option( 'activitypub_allow_reposts', '1' );
+		$auto_approve  = get_option( 'activitypub_auto_approve_reactions', '0' );
 		?>
 		<fieldset>
 			<p>
@@ -392,11 +325,17 @@ class Settings_Fields {
 			</p>
 			<p>
 				<label>
-					<input type="checkbox" name="activitypub_allow_announces" value="1" <?php checked( '1', $allow_reposts ); ?> />
+					<input type="checkbox" name="activitypub_allow_reposts" value="1" <?php checked( '1', $allow_reposts ); ?> />
 					<?php esc_html_e( 'Receive reblogs (boosts)', 'activitypub' ); ?>
 				</label>
 			</p>
-			<p class="description"><?php esc_html_e( 'Types of interactions from the Fediverse your blog should accept.', 'activitypub' ); ?></p>
+			<p class="interactions description"><?php esc_html_e( 'Types of interactions from the Fediverse your blog should accept.', 'activitypub' ); ?></p>
+			<p>
+				<label>
+					<input type="checkbox" name="activitypub_auto_approve_reactions" value="1" <?php checked( '1', $auto_approve ); ?> />
+					<?php esc_html_e( 'Auto approve reactions', 'activitypub' ); ?>
+				</label>
+			</p>
 		</fieldset>
 		<?php
 	}
@@ -435,14 +374,14 @@ class Settings_Fields {
 	 * Render attribution domains field.
 	 */
 	public static function render_attribution_domains_field() {
-		$value = get_option( 'activitypub_attribution_domains', \Activitypub\home_host() );
+		$value = get_option( 'activitypub_attribution_domains', home_host() );
 		?>
 		<textarea
 			id="activitypub_attribution_domains"
 			name="activitypub_attribution_domains"
 			class="large-text"
 			cols="50" rows="5"
-			placeholder="<?php echo esc_attr( \Activitypub\home_host() ); ?>"
+			placeholder="<?php echo esc_attr( home_host() ); ?>"
 		><?php echo esc_textarea( $value ); ?></textarea>
 		<p class="description"><?php esc_html_e( 'Websites allowed to credit you, one per line. Protects from false attributions.', 'activitypub' ); ?></p>
 		<?php
@@ -480,22 +419,77 @@ class Settings_Fields {
 	}
 
 	/**
-	 * Render blocklist field.
+	 * Render moderation section description.
 	 */
-	public static function render_blocklist_field() {
+	public static function render_moderation_section_description() {
+		echo '<p>' . \esc_html__( 'Configure site-wide moderation settings. These blocks will affect all users and ActivityPub content on your site.', 'activitypub' ) . '</p>';
+	}
+
+	/**
+	 * Render site blocked domains field.
+	 */
+	public static function render_site_blocked_domains_field() {
+		$blocked_domains = Moderation::get_site_blocks()['domains'];
 		?>
-		<p>
-			<?php
-			echo \wp_kses(
-				\sprintf(
-					// translators: %s is a URL.
-					\__( 'To block servers, add the host of the server to the "<a href="%s">Disallowed Comment Keys</a>" list.', 'activitypub' ),
-					\esc_url( \admin_url( 'options-discussion.php#disallowed_keys' ) )
-				),
-				'default'
-			);
-			?>
-		</p>
+		<p class="description"><?php \esc_html_e( 'Block entire ActivityPub instances by domain name.', 'activitypub' ); ?></p>
+
+		<div class="activitypub-site-block-list">
+			<?php if ( ! empty( $blocked_domains ) ) : ?>
+			<table class="widefat striped activitypub-site-blocked-domain" role="presentation" style="max-width: 500px; margin: 15px 0;">
+				<?php foreach ( $blocked_domains as $domain ) : ?>
+					<tr>
+						<td><?php echo \esc_html( $domain ); ?></td>
+						<td style="width: 80px;">
+							<button type="button" class="button button-small remove-site-block-btn" data-type="domain" data-value="<?php echo \esc_attr( $domain ); ?>">
+								<?php \esc_html_e( 'Remove', 'activitypub' ); ?>
+							</button>
+						</td>
+					</tr>
+				<?php endforeach; ?>
+			</table>
+			<?php endif; ?>
+
+			<div class="add-site-block-form" style="display: flex; max-width: 500px; gap: 8px;">
+				<input type="text" class="regular-text" id="new_site_domain" placeholder="<?php \esc_attr_e( 'example.com', 'activitypub' ); ?>" style="flex: 1; min-width: 0;" />
+				<button type="button" class="button add-site-block-btn" data-type="domain" style="flex-shrink: 0; white-space: nowrap;">
+					<?php \esc_html_e( 'Add Block', 'activitypub' ); ?>
+				</button>
+			</div>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Render site blocked keywords field.
+	 */
+	public static function render_site_blocked_keywords_field() {
+		$blocked_keywords = Moderation::get_site_blocks()['keywords'];
+		?>
+		<p class="description"><?php \esc_html_e( 'Block ActivityPub content containing specific keywords.', 'activitypub' ); ?></p>
+
+		<div class="activitypub-site-block-list">
+			<?php if ( ! empty( $blocked_keywords ) ) : ?>
+			<table class="widefat striped activitypub-site-blocked-keyword" role="presentation" style="max-width: 500px; margin: 15px 0;">
+				<?php foreach ( $blocked_keywords as $keyword ) : ?>
+					<tr>
+						<td><?php echo \esc_html( $keyword ); ?></td>
+						<td style="width: 80px;">
+							<button type="button" class="button button-small remove-site-block-btn" data-type="keyword" data-value="<?php echo \esc_attr( $keyword ); ?>">
+								<?php \esc_html_e( 'Remove', 'activitypub' ); ?>
+							</button>
+						</td>
+					</tr>
+				<?php endforeach; ?>
+			</table>
+			<?php endif; ?>
+
+			<div class="add-site-block-form" style="display: flex; max-width: 500px; gap: 8px;">
+				<input type="text" class="regular-text" id="new_site_keyword" placeholder="<?php \esc_attr_e( 'spam keyword', 'activitypub' ); ?>" style="flex: 1; min-width: 0;" />
+				<button type="button" class="button add-site-block-btn" data-type="keyword" style="flex-shrink: 0; white-space: nowrap;">
+					<?php \esc_html_e( 'Add Block', 'activitypub' ); ?>
+				</button>
+			</div>
+		</div>
 		<?php
 	}
 }

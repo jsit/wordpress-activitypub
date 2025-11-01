@@ -8,13 +8,12 @@
 namespace Activitypub\Tests;
 
 use Activitypub\Collection\Actors;
-use Activitypub\Model\Blog;
 use Activitypub\Move;
 
 /**
  * Test class for Activitypub Move.
  *
- * @coversDefaultClass Move
+ * @coversDefaultClass \Activitypub\Move
  */
 class Test_Move extends \WP_UnitTestCase {
 
@@ -41,10 +40,8 @@ class Test_Move extends \WP_UnitTestCase {
 		$from = Actors::get_by_id( self::$user_id )->get_id();
 		$to   = 'https://newsite.com/user/1';
 
+		add_filter( 'pre_http_request', '__return_false' );
 		Move::externally( $from, $to );
-
-		$moved_to = Actors::get_by_id( self::$user_id )->get_moved_to();
-		$this->assertEquals( $to, $moved_to );
 
 		$moved_to = Actors::get_by_id( self::$user_id )->get_moved_to();
 		$this->assertEquals( $to, $moved_to );
@@ -218,7 +215,7 @@ class Test_Move extends \WP_UnitTestCase {
 		$this->assertStringStartsWith( $new_domain, $outbox_item->target );
 
 		// Verify the old host was stored.
-		$this->assertEquals( 'example.org', \get_option( 'activitypub_old_host' ) );
+		$this->assertEquals( \wp_parse_url( $old_domain, PHP_URL_HOST ), \get_option( 'activitypub_old_host' ) );
 
 		// Clean up.
 		\delete_option( 'activitypub_old_host' );
